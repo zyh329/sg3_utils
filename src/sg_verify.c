@@ -37,7 +37,6 @@ static struct option long_options[] = {
         {"dpo", 0, 0, 'd'},
         {"help", 0, 0, 'h'},
         {"lba", 1, 0, 'l'},
-        {"bytechk", 1, 0, 'k' },
         {"readonly", 0, 0, 'r'},
         {"verbose", 0, 0, 'v'},
         {"version", 0, 0, 'V'},
@@ -49,16 +48,14 @@ static void
 usage()
 {
     fprintf(stderr, "Usage: "
-          "sg_verify [--bpc=BPC] [--bytechk=N] [--count=COUNT] [--dpo] "
-          "[--help] [--lba=LBA]\n"
+          "sg_verify [--bpc=BPC] [--count=COUNT] [--dpo] [--help] "
+          "[--lba=LBA]\n"
           "                 [--readonly] [--verbose] [--version] "
           "[--vrprotect=VRP]\n"
           "                 DEVICE\n"
           "  where:\n"
           "    --bpc=BPC|-b BPC    max blocks per verify command "
           "(def 128)\n"
-          "    --bytechk=N         Number of bytes to read from stdin and to"
-          "                        verify the device data with\n"
           "    --count=COUNT|-c COUNT    count of blocks to verify "
           "(def 1)\n"
           "    --dpo|-d            disable page out (cache retention "
@@ -82,8 +79,7 @@ main(int argc, char * argv[])
     int sg_fd, res, c, num;
     int64_t ll;
     int dpo = 0;
-    int64_t bytechk = -1;
-    char *ref_data = NULL;
+    int bytechk = 0;
     int vrprotect = 0;
     int64_t count = 1;
     int64_t orig_count;
@@ -126,9 +122,6 @@ main(int argc, char * argv[])
         case '?':
             usage();
             return 0;
-        case 'k':
-            bytechk = sg_get_llnum(optarg);
-            break;
         case 'l':
             ll = sg_get_llnum(optarg);
             if (-1 == ll) {
@@ -190,20 +183,6 @@ main(int argc, char * argv[])
     orig_count = count;
     orig_lba = lba;
 
-    if (bytechk > 0) {
-        int64_t read = 0;
-
-        ref_data = malloc(bytechk);
-        while (read < bytechk) {
-            size_t res = fread(ref_data, 1, bytechk - read, stdin);
-            if (res <= 0) {
-                fprintf(stderr, "reading from stdin failed\n");
-                return SG_LIB_FILE_ERROR;
-            }
-            read += res;
-        }
-    }
-
     if (NULL == device_name) {
         fprintf(stderr, "missing device name!\n");
         usage();
@@ -218,9 +197,9 @@ main(int argc, char * argv[])
 
     for (; count > 0; count -= bpc, lba +=bpc) {
         num = (count > bpc) ? bpc : count;
-        res = sg_ll_verify10(sg_fd, vrprotect, dpo, bytechk >= 0,
-                             (unsigned int)lba, num, ref_data,
-                             bytechk >= 0 ? bytechk : 0, &info, 1, verbose);
+        res = sg_ll_verify10(sg_fd, vrprotect, dpo, bytechk,
+                             (unsigned int)lba, num, NULL, 0,
+                             &info, 1, verbose);
         if (0 != res) {
             ret = res;
             switch (res) {
@@ -268,8 +247,5 @@ main(int argc, char * argv[])
         if (0 == ret)
             return SG_LIB_FILE_ERROR;
     }
-
-    free(ref_data);
-
     return (ret >= 0) ? ret : SG_LIB_CAT_OTHER;
 }
