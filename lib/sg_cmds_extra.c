@@ -169,12 +169,14 @@ sg_ll_get_lba_status(int sg_fd, uint64_t start_llba, void * resp,
  * SG_LIB_CAT_ILLEGAL_REQ -> bad field in cdb, SG_LIB_CAT_ABORTED_COMMAND,
  * SG_LIB_CAT_UNIT_ATTENTION, -1 -> other failure */
 int
-sg_ll_report_tgt_prt_grp(int sg_fd, void * resp, int mx_resp_len, int noisy,
-                         int verbose)
+sg_ll_report_tgt_prt_grp(int sg_fd, void * resp, int mx_resp_len,
+                         unsigned parameter_data_format,
+                         int noisy, int verbose)
 {
     int k, res, ret, sense_cat;
     unsigned char rtpgCmdBlk[MAINTENANCE_IN_CMDLEN] =
-                         {MAINTENANCE_IN_CMD, REPORT_TGT_PRT_GRP_SA,
+                         {MAINTENANCE_IN_CMD,
+                          (parameter_data_format << 5) | REPORT_TGT_PRT_GRP_SA,
                           0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
     unsigned char sense_b[SENSE_BUFF_LEN];
     struct sg_pt_base * ptvp;

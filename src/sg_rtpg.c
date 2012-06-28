@@ -81,6 +81,7 @@ static void usage()
           "                 DEVICE\n"
           "  where:\n"
           "    --decode|-d        decode status and asym. access state\n"
+          "    --extended|-e      use extended parameter data format\n"
           "    --help|-h          print out usage message\n"
           "    --hex|-H           print out response in hex\n"
           "    --raw|-r           output response in binary to stdout\n"
@@ -155,6 +156,7 @@ int main(int argc, char * argv[])
     unsigned char reportTgtGrpBuff[REPORT_TGT_GRP_BUFF_LEN];
     unsigned char * ucp;
     int decode = 0;
+    int extended = 0;
     int hex = 0;
     int raw = 0;
     int verbose = 0;
@@ -164,7 +166,7 @@ int main(int argc, char * argv[])
     while (1) {
         int option_index = 0;
 
-        c = getopt_long(argc, argv, "dhHrvV", long_options,
+        c = getopt_long(argc, argv, "dehHrvV", long_options,
                         &option_index);
         if (c == -1)
             break;
@@ -172,6 +174,9 @@ int main(int argc, char * argv[])
         switch (c) {
         case 'd':
             decode = 1;
+            break;
+        case 'e':
+            extended = 1;
             break;
         case 'h':
         case '?':
@@ -233,7 +238,7 @@ int main(int argc, char * argv[])
 
 #ifndef TEST_CODE
     res = sg_ll_report_tgt_prt_grp(sg_fd, reportTgtGrpBuff,
-                            sizeof(reportTgtGrpBuff), 1, verbose);
+                            sizeof(reportTgtGrpBuff), extended, 1, verbose);
 #else
     memcpy(reportTgtGrpBuff, dummy_resp, sizeof(dummy_resp));
     res = 0;
@@ -263,7 +268,11 @@ int main(int argc, char * argv[])
             goto err_out;
         }
         printf("Report target port groups:\n");
-        for (k = 4, ucp = reportTgtGrpBuff + 4; k < report_len;
+        if (extended) {
+            printf("  format type = %u; implicit transition time = %u\n\n",
+                   (reportTgtGrpBuff[4] >> 4) & 7, reportTgtGrpBuff[5]);
+        }
+        for (k = extended ? 8 : 4, ucp = reportTgtGrpBuff + k; k < report_len;
              k += off, ucp += off) {
 
             printf("  target port group id : 0x%x , Pref=%d\n",

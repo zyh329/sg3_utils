@@ -572,7 +572,7 @@ main(int argc, char * argv[])
         /* trunc = 0; */
 
         res = sg_ll_report_tgt_prt_grp(sg_fd, reportTgtGrpBuff,
-                                sizeof(reportTgtGrpBuff), 1, verbose);
+                                sizeof(reportTgtGrpBuff), 0, 1, verbose);
         ret = res;
         if (0 == res) {
             report_len = (reportTgtGrpBuff[0] << 24) +

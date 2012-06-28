@@ -158,7 +158,9 @@ extern int sg_ll_report_id_info(int sg_fd, int itype, void * resp,
  * SG_LIB_CAT_ILLEGAL_REQ -> bad field in cdb, SG_LIB_CAT_ABORTED_COMMAND,
  * SG_LIB_CAT_UNIT_ATTENTION, -1 -> other failure */
 extern int sg_ll_report_tgt_prt_grp(int sg_fd, void * resp,
-                                    int mx_resp_len, int noisy, int verbose);
+                                    int mx_resp_len,
+                                    unsigned parameter_data_format,
+                                    int noisy, int verbose);
 
 /* Invokes a SCSI SET TARGET PORT GROUPS command. Return of 0 -> success,
  * SG_LIB_CAT_INVALID_OP -> Report Target Port Groups not supported,
