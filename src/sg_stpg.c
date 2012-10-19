@@ -24,7 +24,7 @@
  * to the given SCSI device.
  */
 
-static char * version_str = "1.4 20120322";
+static char * version_str = "1.5 20121019";
 
 #define TGT_GRP_BUFF_LEN 1024
 #define MX_ALLOC_LEN (0xc000 + 0x80)
