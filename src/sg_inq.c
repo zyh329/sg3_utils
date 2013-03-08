@@ -1,5 +1,5 @@
 /* A utility program originally written for the Linux OS SCSI subsystem.
-*  Copyright (C) 2000-2012 D. Gilbert
+*  Copyright (C) 2000-2013 D. Gilbert
 *  This program is free software; you can redistribute it and/or modify
 *  it under the terms of the GNU General Public License as published by
 *  the Free Software Foundation; either version 2, or (at your option)
@@ -66,7 +66,7 @@
  * information [MAINTENANCE IN, service action = 0xc]; see sg_opcodes.
  */
 
-static char * version_str = "1.08 20120927";    /* SPC-4 rev 36 */
+static char * version_str = "1.11 20130109";    /* SPC-4 rev 36 */
 
 
 /* Following VPD pages are in ascending page number order */
@@ -167,8 +167,8 @@ static struct svpd_values_name_t vpd_pg[] = {
     {VPD_SUPPORTED_VPDS, 0, -1, 0, "sv", "Supported VPD pages"},
     {VPD_3PARTY_COPY, 0, -1, 0, "tpc", "Third party copy"},
     /* Following are vendor specific */
-    {VPD_RDAC_VAC, 0, -1, 1, "rdac_vac", "RDAC volume access control (IBM)"},
-    {VPD_RDAC_VERS, 0, -1, 1, "rdac_vers", "RDAC software version (IBM)"},
+    {VPD_RDAC_VAC, 0, -1, 1, "rdac_vac", "RDAC volume access control (RDAC)"},
+    {VPD_RDAC_VERS, 0, -1, 1, "rdac_vers", "RDAC software version (RDAC)"},
     {VPD_UPR_EMC, 0, -1, 1, "upr", "Unit path report (EMC)"},
     {0, 0, 0, 0, NULL, NULL},
 };
@@ -745,6 +745,24 @@ encode_whitespaces(unsigned char *str, int inlen)
     }
     str[i] = '\0';
     return i;
+}
+
+static int
+encode_string(char *out, const unsigned char *in, int inlen)
+{
+    int i, j = 0;
+
+    for (i = 0; (i < inlen); ++i) {
+        if (isblank(in[i]) || !isprint(in[i])) {
+            sprintf(&out[j], "\\x%02x", in[i]);
+            j += 4;
+        } else {
+            out[j] = in[i];
+            j++;
+        }
+    }
+    out[j] = '\0';
+    return j;
 }
 
 struct vpd_name {
@@ -1796,8 +1814,8 @@ decode_b0_vpd(unsigned char * buff, int len, int do_hex, int pdt)
             if (len > 19) {     /* added in sbc3r09 */
                 u = (buff[16] << 24) | (buff[17] << 16) | (buff[18] << 8) |
                     buff[19];
-                printf("  Maximum prefetch, xdread, xdwrite transfer length: %u "
-                       "blocks\n", u);
+                printf("  Maximum prefetch, xdread, xdwrite transfer length: "
+                       "%u blocks\n", u);
             }
             if (len > 27) {     /* added in sbc3r18 */
                 u = ((unsigned int)buff[20] << 24) | (buff[21] << 16) |
@@ -1856,6 +1874,35 @@ decode_b1_vpd(unsigned char * buff, int len, int do_hex, int pdt)
                 printf("  Reserved [0x%x]\n", u);
             else
                 printf("  Nominal rotation rate: %d rpm\n", u);
+            printf("  Product type=%d\n", buff[6]);
+            printf("  WABEREQ=%d\n", (buff[7] >> 6) & 0x3);
+            printf("  WACEREQ=%d\n", (buff[7] >> 4) & 0x3);
+            u = buff[7] & 0xf;
+            printf("  Nominal form factor ");
+            switch(u) {
+            case 0:
+                printf("is not reported\n");
+                break;
+            case 1:
+                printf("5.25 inches\n");
+                break;
+            case 2:
+                printf("3.5 inches\n");
+                break;
+            case 3:
+                printf("2.5 inches\n");
+                break;
+            case 4:
+                printf("1.8 inches\n");
+                break;
+            case 5:
+                printf("less then 1.8 inches\n");
+                break;
+            default:
+                printf("reserved [%u]\n", u);
+                break;
+            }
+            printf("  VBULS=%d\n", buff[8] & 0x1);
             break;
         case PDT_TAPE: case PDT_MCHANGER: case PDT_ADC:
             printf("  Manufacturer-assigned serial number: %.*s\n",
@@ -1881,15 +1928,18 @@ decode_b3_vpd(unsigned char * buff, int len, int do_hex, int pdt)
     switch (pdt) {
         case PDT_DISK: case PDT_WO: case PDT_OPTICAL:
             if (len < 0xc0) {
-                fprintf(stderr, "Referrals VPD page length too short=%d\n", len);
+                fprintf(stderr, "Referrals VPD page length too short=%d\n",
+                        len);
                 return;
             }
             s = (buff[8] << 24) | (buff[9] << 16) | (buff[10] << 8) | buff[11];
-            m = (buff[12] << 24) | (buff[13] << 16) | (buff[14] << 8) | buff[15];
+            m = (buff[12] << 24) | (buff[13] << 16) | (buff[14] << 8) |
+                buff[15];
             if (0 == s)
                 printf("  Single user data segment\n");
             else if (0 == m)
-                printf("  Segment size specified by user data segment descriptor\n");
+                printf("  Segment size specified by user data segment "
+                       "descriptor\n");
             else
                 printf("  Segment size: %u, segment multiplier: %u\n", s, m);
             break;
@@ -2183,7 +2233,7 @@ process_std_inq(int sg_fd, const struct opts_t * optsp)
     res = sg_ll_inquiry(sg_fd, 0, 0, 0, rsp_buff, rlen, 0, verb);
     if (0 == res) {
         pqual = (rsp_buff[0] & 0xe0) >> 5;
-        if (! optsp->do_raw) {
+        if (! optsp->do_raw && ! optsp->do_export) {
             if (0 == pqual)
                 printf("standard INQUIRY:\n");
             else if (1 == pqual)
@@ -2225,7 +2275,7 @@ process_std_inq(int sg_fd, const struct opts_t * optsp)
             dStrRaw((const char *)rsp_buff, act_len);
         else if (optsp->do_hex)
             dStrHex((const char *)rsp_buff, act_len, 0);
-        else {
+        else if (!optsp->do_export) {
             printf("  PQual=%d  Device_type=%d  RMB=%d  version=0x%02x ",
                    pqual, peri_type, !!(rsp_buff[1] & 0x80),
                    (unsigned int)rsp_buff[2]);
@@ -2266,39 +2316,63 @@ process_std_inq(int sg_fd, const struct opts_t * optsp)
             cp = sg_get_pdt_str(peri_type, sizeof(buff), buff);
             if (strlen(cp) > 0)
                 printf("   Peripheral device type: %s\n", cp);
-
-            if (act_len <= 8)
+        }
+        if (act_len <= 8) {
+            if (! optsp->do_export)
                 printf(" Inquiry response length=%d, no vendor, "
                        "product or revision data\n", act_len);
-            else {
-                if (act_len < SAFE_STD_INQ_RESP_LEN)
-                    rsp_buff[act_len] = '\0';
-                memcpy(xtra_buff, &rsp_buff[8], 8);
-                xtra_buff[8] = '\0';
+        } else {
+            int i;
+
+            if (act_len < SAFE_STD_INQ_RESP_LEN)
+                rsp_buff[act_len] = '\0';
+            memcpy(xtra_buff, &rsp_buff[8], 8);
+            xtra_buff[8] = '\0';
+            /* Fixup any tab characters */
+            for (i = 0; i < 8; ++i)
+                if (xtra_buff[i] == 0x09)
+                    xtra_buff[i] = ' ';
+            if (optsp->do_export) {
+                len = encode_whitespaces((unsigned char *)xtra_buff, 8);
+                printf("SCSI_VENDOR=%s\n", xtra_buff);
+                encode_string(xtra_buff, &rsp_buff[8], 8);
+                printf("SCSI_VENDOR_ENC=%s\n", xtra_buff);
+            } else
                 printf(" Vendor identification: %s\n", xtra_buff);
-                if (act_len <= 16)
+            if (act_len <= 16) {
+                if (! optsp->do_export)
                     printf(" Product identification: <none>\n");
-                else {
-                    memcpy(xtra_buff, &rsp_buff[16], 16);
-                    xtra_buff[16] = '\0';
+            } else {
+                memcpy(xtra_buff, &rsp_buff[16], 16);
+                xtra_buff[16] = '\0';
+                if (optsp->do_export) {
+                    len = encode_whitespaces((unsigned char *)xtra_buff, 16);
+                    printf("SCSI_MODEL=%s\n", xtra_buff);
+                    encode_string(xtra_buff, &rsp_buff[16], 16);
+                    printf("SCSI_MODEL_ENC=%s\n", xtra_buff);
+                } else
                     printf(" Product identification: %s\n", xtra_buff);
-                }
-                if (act_len <= 32)
+            }
+            if (act_len <= 32) {
+                if (!optsp->do_export)
                     printf(" Product revision level: <none>\n");
-                else {
-                    memcpy(xtra_buff, &rsp_buff[32], 4);
-                    xtra_buff[4] = '\0';
+            } else {
+                memcpy(xtra_buff, &rsp_buff[32], 4);
+                xtra_buff[4] = '\0';
+                if (optsp->do_export) {
+                    len = encode_whitespaces((unsigned char *)xtra_buff, 4);
+                    printf("SCSI_REVISION=%s\n", xtra_buff);
+                } else
                     printf(" Product revision level: %s\n", xtra_buff);
-                }
-                if (optsp->do_descriptors) {
-                    for (j = 0, k = 58; ((j < 8) && ((k + 1) < act_len));
-                         k +=2, ++j)
-                        vdesc_arr[j] = ((rsp_buff[k] << 8) +
-                                         rsp_buff[k + 1]);
-                }
+            }
+            if (optsp->do_descriptors) {
+                for (j = 0, k = 58; ((j < 8) && ((k + 1) < act_len));
+                     k +=2, ++j)
+                    vdesc_arr[j] = ((rsp_buff[k] << 8) +
+                                    rsp_buff[k + 1]);
             }
         }
-        if (! (optsp->do_raw || optsp->do_hex)) {
+        if (! (optsp->do_raw || optsp->do_hex || optsp->do_export)) {
             if (0 == optsp->resp_len) {
                 if (0 == fetch_unit_serial_num(sg_fd, xtra_buff,
                                    sizeof(xtra_buff), optsp->do_verbose))
@@ -3149,18 +3223,17 @@ main(int argc, char * argv[])
         }
     }
     if (opts.do_export) {
-        if (NULL == opts.page_arg) {
-            opts.page_num = VPD_DEVICE_ID;
+        if (opts.page_num != -1) {
+            if (opts.page_num != VPD_DEVICE_ID &&
+                opts.page_num != VPD_UNIT_SERIAL_NUM) {
+                fprintf(stderr, "Option '--export' only supported "
+                        "for VPD pages 0x80 and 0x83\n");
+                usage_for(&opts);
+                return SG_LIB_SYNTAX_ERROR;
+            }
+            ++opts.do_decode;
+            ++opts.do_vpd;
         }
-        if (opts.page_num != VPD_DEVICE_ID &&
-            opts.page_num != VPD_UNIT_SERIAL_NUM) {
-            fprintf(stderr, "Option '--export' only supported "
-                    "for VPD pages 0x80 and 0x83\n");
-            usage_for(&opts);
-            return SG_LIB_SYNTAX_ERROR;
-        }
-        ++opts.do_decode;
-        ++opts.do_vpd;
     }
 
     if ((0 == opts.do_cmddt) && (opts.page_num >= 0) && opts.p_given)
@@ -3371,7 +3444,8 @@ ata_command_interface(int device, char *data, int * atapi_flag, int verbose)
         } else if (atapi_flag) {
             *atapi_flag = 1;
             if (verbose > 1)
-                fprintf(stderr, "HDIO_DRIVE_CMD(ATA_IDENTIFY_DEVICE) succeeded\n");
+                fprintf(stderr, "HDIO_DRIVE_CMD(ATA_IDENTIFY_DEVICE) "
+                        "succeeded\n");
         }
     } else {    /* assume non-packet device */
         buff[0] = ATA_IDENTIFY_DEVICE;

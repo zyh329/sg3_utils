@@ -79,8 +79,8 @@ fi
 %{_libdir}/*.la
 
 %changelog
-* Fri Oct 19 2012 - dgilbert at interlog dot com
-- track t10 changes
+* Thu Jan 17 2013 - dgilbert at interlog dot com
+- add sg_compare_and_write, track t10 changes
   * sg3_utils-1.35
 
 * Sat Oct 13 2012 - dgilbert at interlog dot com
