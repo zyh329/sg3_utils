@@ -343,9 +343,10 @@ sg_get_sense_filemark_eom_ili(const unsigned char * sensep, int sb_len,
 /* Returns 1 if SKSV is set and sense key is NO_SENSE or NOT_READY. Also
  * returns 1 if progress indication sense data descriptor found. Places
  * progress field from sense data where progress_outp points. If progress
- * field is not available returns 0. Handles both fixed and descriptor
- * sense formats. N.B. App should multiply by 100 and divide by 65536
- * to get percentage completion from given value. */
+ * field is not available returns 0 and *progress_outp is unaltered. Handles
+ * both fixed and descriptor sense formats.
+ * Hint: if 1 is returned *progress_outp may be multiplied by 100 then
+ * divided by 65536 to get the percentage completion. */
 int
 sg_get_sense_progress_fld(const unsigned char * sensep, int sb_len,
                           int * progress_outp)
@@ -588,7 +589,7 @@ sg_get_sense_descriptors_str(const unsigned char * sense_buffer, int sb_len,
                 }
                 progress = (descp[5] << 8) + descp[6];
                 pr = (progress * 100) / 65536;
-                rem = ((progress * 100) % 65536) / 655;
+                rem = ((progress * 100) % 65536) / 656;
                 n += my_snprintf(b + n, blen - n, "%d.%02d%%\n", pr, rem);
                 break;
             case SPC_SK_COPY_ABORTED:
@@ -711,7 +712,7 @@ sg_get_sense_descriptors_str(const unsigned char * sense_buffer, int sb_len,
             }
             progress = (descp[6] << 8) + descp[7];
             pr = (progress * 100) / 65536;
-            rem = ((progress * 100) % 65536) / 655;
+            rem = ((progress * 100) % 65536) / 656;
             n += my_snprintf(b + n, blen - n, "    %d.02%d%%", pr, rem);
             n += my_snprintf(b + n, blen - n, " [sense_key=0x%x "
                              "asc,ascq=0x%x,0x%x]\n",
@@ -945,7 +946,7 @@ sg_get_sense_str(const char * leadin, const unsigned char * sense_buffer,
                 case SPC_SK_NOT_READY:
                     progress = (sense_buffer[16] << 8) + sense_buffer[17];
                     pr = (progress * 100) / 65536;
-                    rem = ((progress * 100) % 65536) / 655;
+                    rem = ((progress * 100) % 65536) / 656;
                     r += my_snprintf(b + r, blen - r, "  Progress "
                                      "indication: %d.%02d%%\n", pr, rem);
                     break;
@@ -1685,9 +1686,9 @@ sg_get_num(const char * buf)
                 return num * 1073741824;
             return -1;
         case 'X':
-            cp = strchr(buf, 'x');
+            cp = (char *)strchr(buf, 'x');
             if (NULL == cp)
-                cp = strchr(buf, 'X');
+                cp = (char *)strchr(buf, 'X');
             if (cp) {
                 n = sg_get_num(cp + 1);
                 if (-1 != n)
@@ -1712,12 +1713,12 @@ sg_get_num_nomult(const char * buf)
 {
     int res, len, num;
     unsigned int unum;
-    const char * commap;
+    char * commap;
 
     if ((NULL == buf) || ('\0' == buf[0]))
         return -1;
     len = strlen(buf);
-    commap = strchr(buf + 1, ',');
+    commap = (char *)strchr(buf + 1, ',');
     if (('0' == buf[0]) && (('x' == buf[1]) || ('X' == buf[1]))) {
         res = sscanf(buf + 2, "%x", &unum);
         num = unum;
@@ -1817,9 +1818,9 @@ sg_get_llnum(const char * buf)
                 return num * 1099511627776LL * 1024;
             return -1LL;
         case 'X':
-            cp = strchr(buf, 'x');
+            cp = (char *)strchr(buf, 'x');
             if (NULL == cp)
-                cp = strchr(buf, 'X');
+                cp = (char *)strchr(buf, 'X');
             if (cp) {
                 ll = sg_get_llnum(cp + 1);
                 if (-1LL != ll)

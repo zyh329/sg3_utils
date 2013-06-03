@@ -26,10 +26,10 @@
 
 #include "sg_pt.h"
 
-static char * version_str = "0.38 20130228";    /* spc4r26 */
+static const char * version_str = "0.38 20130507";    /* spc4r26 */
 
 
-#define SENSE_BUFF_LEN 32       /* Arbitrary, could be larger */
+#define SENSE_BUFF_LEN 64       /* Arbitrary, could be larger */
 #define DEF_TIMEOUT_SECS 60
 
 #define SG_MAINTENANCE_IN 0xa3

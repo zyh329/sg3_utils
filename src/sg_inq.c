@@ -67,7 +67,7 @@
  * information [MAINTENANCE IN, service action = 0xc]; see sg_opcodes.
  */
 
-static char * version_str = "1.12 20130312";    /* SPC-4 rev 36 */
+static const char * version_str = "1.13 20130507";    /* SPC-4 rev 36 */
 
 
 /* Following VPD pages are in ascending page number order */
@@ -859,7 +859,7 @@ encode_string(char *out, const unsigned char *in, int inlen)
 struct vpd_name {
     int number;
     int peri_type;
-    char * name;
+    const char * name;
 };
 
 /* In numerical order */
@@ -2363,7 +2363,7 @@ process_std_inq(int sg_fd, const struct opts_t * optsp)
         else
             act_len = (rlen < len) ? rlen : len;
         /* don't use more than HBA's resid says was transferred from LU */
-        if (act_len < (rlen - resid))
+        if (act_len > (rlen - resid))
             act_len = rlen - resid;
         if (optsp->do_raw)
             dStrRaw((const char *)rsp_buff, act_len);

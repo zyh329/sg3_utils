@@ -1,4 +1,4 @@
-.TH SG_INQ "8" "March 2013" "sg3_utils\-1.36" SG3_UTILS
+.TH SG_INQ "8" "May 2013" "sg3_utils\-1.36" SG3_UTILS
 .SH NAME
 sg_inq \- issue SCSI INQUIRY command, output and decode response
 .SH SYNOPSIS
@@ -55,7 +55,7 @@ option name.
 \fB\-a\fR, \fB\-\-ata\fR
 Assume given \fIDEVICE\fR is an ATA or ATAPI device which can receive ATA
 commands from the host operating system. Skip the SCSI INQUIRY command and
-use either the ATA IDENTIFY DEVICE command (for nonpacket devices) or the
+use either the ATA IDENTIFY DEVICE command (for non-packet devices) or the
 ATA IDENTIFY PACKET DEVICE command. To show the response in hex, add
 a '\-\-verbose' option. This option is only available in Linux.
 .TP
@@ -90,7 +90,7 @@ number VPD page 0x80 is given it prints out information in the form:
 page is given it prints out information in the form:
 "SCSI_VENDOR=<vendor>", "SCSI_MODEL=<model>", and
 "SCSI_REVISION=<rev>", taken from the standard inquiry. This may be
-useful for tools like udev in Linux.
+useful for tools like udev(7) in Linux.
 .TP
 \fB\-E\fR, \fB\-x\fR, \fB\-\-extended\fR
 prints the extended INQUIRY VPD page [0x86].

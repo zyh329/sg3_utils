@@ -28,19 +28,20 @@
  * and decodes the response.
  */
 
-static char * version_str = "1.20 20130305";
+static const char * version_str = "1.22 20130528";
 
-#define MAX_RLUNS_BUFF_LEN (1024 * 64)
+#define MAX_RLUNS_BUFF_LEN (1024 * 1024)
 #define DEF_RLUNS_BUFF_LEN (1024 * 8)
 
-static unsigned char reportLunsBuff[MAX_RLUNS_BUFF_LEN];
 
 
 static struct option long_options[] = {
         {"decode", no_argument, 0, 'd'},
         {"help", no_argument, 0, 'h'},
         {"hex", no_argument, 0, 'H'},
+#ifdef SG_LIB_LINUX
         {"linux", no_argument, 0, 'l'},
+#endif
         {"maxlen", required_argument, 0, 'm'},
         {"quiet", no_argument, 0, 'q'},
         {"raw", no_argument, 0, 'r'},
@@ -54,28 +55,40 @@ static struct option long_options[] = {
 static void
 usage()
 {
+#ifdef SG_LIB_LINUX
     fprintf(stderr, "Usage: "
             "sg_luns    [--decode] [--help] [--hex] [--linux] "
             "[--maxlen=LEN]\n"
             "                  [--quiet] [--raw] [--select=SR] "
             "[--verbose]\n"
-            "                  [--version] DEVICE\n"
+            "                  [--version] DEVICE\n");
+#else
+    fprintf(stderr, "Usage: "
+            "sg_luns    [--decode] [--help] [--hex] [--maxlen=LEN] "
+            "[--quiet]\n"
+            "                  [--raw] [--select=SR] [--verbose] "
+            "[--version]\n"
+            "                  DEVICE\n");
+#endif
+    fprintf(stderr,
             "     or\n"
-            "       sg_luns    --test=LUNHEX [--hex] [--verbose]\n"
+            "       sg_luns    --test=ALUN [--hex] [--verbose]\n"
             "  where:\n"
             "    --decode|-d        decode all luns into component parts\n"
             "    --help|-h          print out usage message\n"
             "    --hex|-H           output response in hexadecimal; used "
             "twice\n"
-            "                       shows decoded values in hex\n"
+            "                       shows decoded values in hex\n");
+#ifdef SG_LIB_LINUX
+    fprintf(stderr,
             "    --linux|-l         show Linux integer lun after T10 "
-            "representation\n"
+            "representation\n");
+#endif
+    fprintf(stderr,
             "    --maxlen=LEN|-m LEN    max response length (allocation "
             "length in cdb)\n"
-            "                           (def: 0 -> %d bytes)\n",
-            DEF_RLUNS_BUFF_LEN );
-    fprintf(stderr, "    --quiet|-q         output only ASCII hex lun "
-            "values\n"
+            "                           (def: 0 -> %d bytes)\n"
+            "    --quiet|-q         output only ASCII hex lun values\n"
             "    --raw|-r           output response in binary\n"
             "    --select=SR|-s SR    select report SR (def: 0)\n"
             "                          0 -> luns apart from 'well "
@@ -83,15 +96,14 @@ usage()
             "                          1 -> only 'well known' "
             "logical unit numbers\n"
             "                          2 -> all luns\n"
-            "    --test=LUNHEX|-t LUNHEX    decode LUNHEX and ignore "
-            "other options\n"
-            "                               and DEVICE (apart from '-H')\n"
+            "    --test=ALUN|-t ALUN    decode ALUN and ignore most other "
+            "options\n"
+            "                           and DEVICE (apart from '-H')\n"
             "    --verbose|-v       increase verbosity\n"
             "    --version|-V       print version string and exit\n\n"
-            "Performs a SCSI REPORT LUNS command. When the --test=LUNHEX "
-            "option is\ngiven, decodes LUNHEX rather than sending a "
-            "REPORT LUNS command.\n"
-            );
+            "Performs a SCSI REPORT LUNS command. When the --test=ALUN "
+            "option is\ngiven, decodes ALUN rather than sending a "
+            "REPORT LUNS command.\n", DEF_RLUNS_BUFF_LEN );
 }
 
 /* Decoded according to SAM-5 rev 10. Note that one draft: BCC rev 0,
@@ -262,6 +274,7 @@ decode_lun(const char * leadin, const unsigned char * lunp, int do_hex,
     }
 }
 
+#ifdef SG_LIB_LINUX
 static void
 linux2t10_lun(uint64_t linux_lun, unsigned char t10_lun[])
 {
@@ -304,6 +317,7 @@ t10_2linux_lun64bitBR(const unsigned char t10_lun[])
         lun = lun | (((t10_lun[i] << 8) | t10_lun[i + 1]) << (i * 8));
     return lun;
 }
+#endif  /* SG_LIB_LINUX */
 
 
 static void
@@ -321,27 +335,37 @@ main(int argc, char * argv[])
     int sg_fd, k, m, off, res, c, list_len, luns, trunc;
     int decode = 0;
     int do_hex = 0;
+#ifdef SG_LIB_LINUX
     int do_linux = 0;
+#endif
     int maxlen = 0;
     int do_quiet = 0;
     int do_raw = 0;
     int select_rep = 0;
     int verbose = 0;
+#ifdef SG_LIB_LINUX
     int test_linux_in = 0;
     int test_linux_out = 0;
     int test_linux_out2 = 0;
+#endif
     unsigned int h;
     const char * test_arg = NULL;
     const char * device_name = NULL;
     const char * cp;
     unsigned char lun_arr[8];
+    unsigned char * reportLunsBuff = NULL;
     int ret = 0;
 
     while (1) {
         int option_index = 0;
 
+#ifdef SG_LIB_LINUX
         c = getopt_long(argc, argv, "dhHlm:qrs:t:vV", long_options,
                         &option_index);
+#else
+        c = getopt_long(argc, argv, "dhHm:qrs:t:vV", long_options,
+                        &option_index);
+#endif
         if (c == -1)
             break;
 
@@ -356,9 +380,11 @@ main(int argc, char * argv[])
         case 'H':
             ++do_hex;
             break;
+#ifdef SG_LIB_LINUX
         case 'l':
             ++do_linux;
             break;
+#endif
         case 'm':
             maxlen = sg_get_num(optarg);
             if ((maxlen < 0) || (maxlen > MAX_RLUNS_BUFF_LEN)) {
@@ -412,6 +438,8 @@ main(int argc, char * argv[])
     if (test_arg) {
         memset(lun_arr, 0, sizeof(lun_arr));
         cp = test_arg;
+        /* check for leading 'L' */
+#ifdef SG_LIB_LINUX
         if ('L' == toupper(cp[0])) {
             uint64_t ull;
 
@@ -422,7 +450,17 @@ main(int argc, char * argv[])
             }
             linux2t10_lun(ull, lun_arr);
             test_linux_in = 1;
-        } else {
+        } else
+#endif
+        {
+            /* Check if trailing 'L' or 'W' */
+            m = strlen(cp);    /* must be at least 1 char in test_arg */
+#ifdef SG_LIB_LINUX
+            if ('L' == toupper(cp[m - 1]))
+                test_linux_out = 1;
+            else if ('W' == toupper(cp[m - 1]))
+                test_linux_out2 = 1;
+#endif
             if (('0' == cp[0]) && ('X' == toupper(cp[1])))
                 cp += 2;
             if (strchr(cp, ' ') || strchr(cp, '\t')) {
@@ -431,20 +469,12 @@ main(int argc, char * argv[])
                         break;
                     lun_arr[k] = h & 0xff;
                 }
-                if (strchr(cp, 'L') || strchr(cp, 'l'))
-                    test_linux_out = 1;
-                else if (strchr(cp, 'B') || strchr(cp, 'b'))
-                    test_linux_out2 = 1;
             } else {
                 for (k = 0; k < 8; ++k, cp += 2) {
                 if (1 != sscanf(cp, "%2x", &h))
                         break;
                     lun_arr[k] = h & 0xff;
                 }
-                if (strchr(cp, 'L') || strchr(cp, 'l'))
-                    test_linux_out = 1;
-                else if (strchr(cp, 'B') || strchr(cp, 'b'))
-                    test_linux_out2 = 1;
             }
             if (0 == k) {
                 fprintf(stderr, "expected a hex number, optionally prefixed "
@@ -452,12 +482,18 @@ main(int argc, char * argv[])
                 return SG_LIB_SYNTAX_ERROR;
             }
         }
-        if (verbose || test_linux_in || test_linux_out2) {
+#ifdef SG_LIB_LINUX
+        if (verbose || test_linux_in || test_linux_out2)
+#else
+        if (verbose)
+#endif
+        {
             printf("64 bit LUN in T10 preferred (hex) format: ");
             for (k = 0; k < 8; ++k)
                 printf(" %02x", lun_arr[k]);
             printf("\n");
         }
+#ifdef SG_LIB_LINUX
         if (test_linux_out) {
             if (do_hex > 1)
                 printf("Linux 'word flipped' integer LUN representation: "
@@ -479,6 +515,7 @@ main(int argc, char * argv[])
                 printf("Linux internal 64 bit LUN representation: %"
                        PRIu64 "\n", t10_2linux_lun64bitBR(lun_arr));
         }
+#endif
         printf("Decoded LUN:\n");
         decode_lun("  ", lun_arr, do_hex, verbose);
         return 0;
@@ -488,8 +525,7 @@ main(int argc, char * argv[])
         usage();
         return SG_LIB_SYNTAX_ERROR;
     }
-    if (0 == maxlen)
-        maxlen = DEF_RLUNS_BUFF_LEN;
+
     if (do_raw) {
         if (sg_set_binary_mode(STDOUT_FILENO) < 0) {
             perror("sg_set_binary_mode");
@@ -504,7 +540,13 @@ main(int argc, char * argv[])
         return SG_LIB_FILE_ERROR;
     }
 
-    memset(reportLunsBuff, 0x0, maxlen);
+    if (0 == maxlen)
+        maxlen = DEF_RLUNS_BUFF_LEN;
+    reportLunsBuff = (unsigned char *)calloc(1, maxlen);
+    if (NULL == reportLunsBuff) {
+        fprintf(stderr, "unable to malloc %d bytes\n", maxlen);
+        return SG_LIB_CAT_OTHER;
+    }
     trunc = 0;
 
     res = sg_ll_report_luns(sg_fd, select_rep, reportLunsBuff, maxlen, 1,
@@ -544,6 +586,7 @@ main(int argc, char * argv[])
             }
             for (m = 0; m < 8; ++m)
                 printf("%02x", reportLunsBuff[off + m]);
+#ifdef SG_LIB_LINUX
             if (do_linux) {
                 uint64_t lin_lun;
 
@@ -553,6 +596,7 @@ main(int argc, char * argv[])
                 else
                     printf("    [%" PRIu64 "]", lin_lun);
             }
+#endif
             printf("\n");
             if (decode)
                 decode_lun("      ", reportLunsBuff + off, do_hex,
@@ -572,6 +616,8 @@ main(int argc, char * argv[])
     }
 
 the_end:
+    if (reportLunsBuff)
+        free(reportLunsBuff);
     res = sg_cmds_close_device(sg_fd);
     if (res < 0) {
         fprintf(stderr, "close error: %s\n", safe_strerror(-res));
