@@ -2,6 +2,114 @@ Each utility has its own version number, date of last change and
 some description at the top of its ".c" file. All utilities in the main
 directory have their own "man" pages. There is also a sg3_utils man page.
 
+Changelog for sg3_utils-1.39 [20140612] [svn: r588]
+  - sg_rep_zones: new utility for ZBC REPORT ZONES
+  - sg_reset_wp: new utility, ZBC RESET WRITE POINTER
+  - sg_ses: add --eiioe=auto|force option
+    - fix AES dpage element indexing problems
+    - add --readonly option
+  - sg_write_buffer: add --bpw=CS option to call
+    write buffer multiple times for big blobs
+  - sg_format: add --ip_def option to fully provision
+  - sg_opcodes: add --mask option
+  - sg_logs: add --in=FN option for log select params
+    - add --filter=PARC (parameter code)
+    - add --no_inq for suppress initial INQUIRY call
+    - add --readonly option
+  - sg_persist: add --readonly option, environment
+    variable SG_PERSIST_IN_RDONLY sets ro on prin cmds
+  - sg_inq: sync version descriptors dated 20105176
+    - suppress dev-id VPD messages so they only appear
+      when --verbose is given
+    - add new SCSI_IDENT_*_ATA pair to --export output
+  - sg_luns: add decoding for conglomerate LUNS
+    - add --lu_cong option to simulate the LU_CONG bit
+  - sg_vpd: add --vendor=VP option, re-order vendor
+    specific pages, split lto into lto5 and lto6
+    - add Supported block lengths and protection types
+      page (sbc4r01)
+    - add Block device characteristics extension
+      page (sbc4r02)
+  - sg_copy_results, sg_get_lba_status, sg_luns,
+    sg_read_buffer, sg_readcap, sg_referrals, sg_rtpg,
+    sg_sat_set_features, sg_sat_identify:
+    add --readonly option
+  - sginfo: strip trailing spaces from INQUIRY text
+  - sg_rbuf: add --echo option (to use echo buffer)
+  - sg_lib: add sanitize command service action names
+    - add 'sense' categories for reservation conflict,
+      data protect and protection information violations
+    - add sg_get_category_sense_str() to API
+    - change struct sg_simple_inquiry_resp::rmb to byte_1
+    - add initial zbc service actions
+    - dStrHex(Err): fix output truncation error
+    - linux, sg: support SCSI_PT_FLAGS_QUEUE_AT_TAIL and
+      SCSI_PT_FLAGS_QUEUE_AT_HEAD (block layer queueing)
+  - sg_lib_data: sync asc/ascq codes with T10 20140516
+    - sync operation code with T10 20140515
+    - add id string for SPC-5
+  - scripts/59-scsi-sg3_utils.rules: removed
+    - functionality split into two scripts:
+      55-scsi-sg3_id.rules + 58-scsi-sg3_symlink.rules
+  - examples/sg_persist_tst.sh: add --exclusive option
+  - win32: sg_scan, sg_ses and sg_log fixes
+  - examples/sgq_dd: re-add old utility as example
+
+Changelog for sg3_utils-1.38 [20140401] [svn: r563]
+  - sg_ses: add --dev-slot-num= and --sas-addr=
+    - fix --data=- problem with large buffers
+    - new --data=@FN to read hex data from file FN
+    - error and warning message cleanup
+    - add --maxlen= option
+  - sg_inq: add --block=0|1 option to control opens
+    - add --inhex=FN to read response in ASCII hex from
+      a file; --inhex=FN --raw reads response in binary
+    - make -HHH (-HHHH for '-p ai') output suitable for
+      another sg_inq invocation to use --inhex to decode
+    - add LU_CONG to standard inquiry response output
+    - decode ASCII information VPD pages
+    - add HAW_ZBC in block dev char. VPD page (sbc4r01)
+    - sync version descriptors dated 20131126
+    - allow --page=-1 to force std INQUIRY decoding
+    - fix overflow in encode_whitespaces
+    - improve unit serial number display (VPD page 0x80)
+  - sg_vpd: add LU_CONG to standard inquiry response output
+    - add --inhex=FN to read response in ASCII hex from
+      a file; --inhex=FN --raw reads response in binary
+    - decode Third Party Copy (tpc) page
+    - add HAW_ZBC in block dev char. VPD page (sbc4r01)
+    - add LTO and DDS vendor pages
+    - allow --page=num to restrict --enumerate output
+  - sg_persist: add PROUT: Replace Lost Reservation (spc4r36)
+    - add --transport-id= for SOP: 'sop,<routing_id_in_hex>'
+  - sg_readcap: for --16 show physical block size if
+    different from logical block size
+  - sg_xcopy: environment variables: XCOPY_TO_SRC and
+    XCOPY_TO_DST indicate where xcopy command is sent
+    - change default to send xcopy to dst (was src)
+    - improve CL handling of short options (e.g. '-vv')
+  - sg_luns: guard against garbage response
+  - sg_decode_sense: with --nospace ignore spaces on
+    command line, so multiple arguments are concatenated
+  - sg_write_same: repeat if unit attention
+  - sg_rtpg: fix indexing bug with --extended option
+  - sg_logs: placeholder for pending defects lpage
+  - sg_unmap: fix another problem with --grpnum= option
+  - sg_lib.h: add PDT_ZBC define (spc4r36p)
+  - sg_lib_data: sync asc/ascq codes with T10 dated 20140320
+    - add pdt string for ZBC (spc4r36p)
+  - sg_lib: extensions to sg_get_num() and sg_get_llnum()
+  - sg_cmds_extra: fix sa bug in sg_ll_3party_copy_out()
+  - scripts/rescan-scsi-bus.sh: check if FC driver exports
+    issue_lip before using it
+    - man page added (Linux only)
+  - scripts/59-scsi-sg3_utils.rules: linux specific udev rules
+  - examples: add sg_tst_excl3 for testing O_EXCL
+    - improve sg_tst_excl and sg_tst_excl2
+    - add sg_tst_context for testing file handle contexts
+  - upgrade automake to version 1.13.3
+  - add suse directory and 'spec' file to facilitate builds
+
 Changelog for sg3_utils-1.37 [20131014] [svn: r522]
   - sg_compare_and_write: fix wrprotect setting
     - add --quiet option to suppress miscompare report

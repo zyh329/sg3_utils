@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2013 Hannes Reinecke, SUSE Labs
+ * Copyright (c) 2011-2014 Hannes Reinecke, SUSE Labs
  * All rights reserved.
  * Use of this source code is governed by a BSD-style
  * license that can be found in the BSD_LICENSE file.
@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include <errno.h>
 #include <getopt.h>
@@ -34,7 +35,7 @@
    and the optional list identifier passed as the list_id argument.
 */
 
-static const char * version_str = "1.5 20131007";
+static const char * version_str = "1.9 20140515";
 
 
 #define MAX_XFER_LEN 10000
@@ -98,6 +99,27 @@ struct descriptor_type segment_descriptor_codes [] = {
     { -1, "" }
 };
 
+#ifdef __GNUC__
+static int pr2serr(const char * fmt, ...)
+        __attribute__ ((format (printf, 1, 2)));
+#else
+static int pr2serr(const char * fmt, ...);
+#endif
+
+
+static int
+pr2serr(const char * fmt, ...)
+{
+    va_list args;
+    int n;
+
+    va_start(args, fmt);
+    n = vfprintf(stderr, fmt, args);
+    va_end(args);
+    return n;
+}
+
+
 static void
 scsi_failed_segment_details(unsigned char *rcBuff, unsigned int rcBuffLen)
 {
@@ -106,18 +128,17 @@ scsi_failed_segment_details(unsigned char *rcBuff, unsigned int rcBuffLen)
     int senseLen;
 
     if (rcBuffLen < 4) {
-        fprintf(stderr, "  <<not enough data to procedd report>>\n");
+        pr2serr("  <<not enough data to procedd report>>\n");
         return;
     }
     len = (rcBuff[0] << 24) | (rcBuff[1] << 16) | (rcBuff[2] << 8) |
           rcBuff[3];
     if (len + 3 > rcBuffLen) {
-        fprintf(stderr, "  <<report too long for internal buffer,"
-                " output truncated\n");
+        pr2serr("  <<report too long for internal buffer, output "
+                "truncated\n");
     }
     if (len < 52) {
-        fprintf(stderr, "  <<no segment details, response data length %d\n",
-                len);
+        pr2serr("  <<no segment details, response data length %d\n", len);
         return;
     }
     printf("Receive copy results (failed segment details):\n");
@@ -133,14 +154,14 @@ scsi_copy_status(unsigned char *rcBuff, unsigned int rcBuffLen)
     unsigned int len;
 
     if (rcBuffLen < 4) {
-        fprintf(stderr, "  <<not enough data to procedd report>>\n");
+        pr2serr("  <<not enough data to procedd report>>\n");
         return;
     }
     len = (rcBuff[0] << 24) | (rcBuff[1] << 16) | (rcBuff[2] << 8) |
           rcBuff[3];
     if (len > rcBuffLen) {
-        fprintf(stderr, "  <<report too long for internal buffer,"
-                " output truncated\n");
+        pr2serr("  <<report too long for internal buffer, output "
+                "truncated\n");
     }
     printf("Receive copy results (copy status):\n");
     printf("    Held data discarded: %s\n", rcBuff[4] & 0x80 ? "Yes":"No");
@@ -173,8 +194,8 @@ scsi_operating_parameters(unsigned char *rcBuff, unsigned int rcBuffLen)
     len = (rcBuff[0] << 24) | (rcBuff[1] << 16) | (rcBuff[2] << 8) |
           rcBuff[3];
     if (len > rcBuffLen) {
-        fprintf(stderr, "  <<report too long for internal buffer,"
-                " output truncated\n");
+        pr2serr("  <<report too long for internal buffer, output "
+                "truncated\n");
     }
     printf("Receive copy results (report operating parameters):\n");
     printf("    Supports no list identifier (SNLID): %s\n",
@@ -250,6 +271,7 @@ static struct option long_options[] = {
         {"hex", 0, 0, 'H'},
         {"list_id", 1, 0, 'l'},
         {"params", 0, 0, 'p'},
+        {"readonly", 0, 0, 'R'},
         {"receive", 0, 0, 'r'},
         {"status", 0, 0, 's'},
         {"verbose", 0, 0, 'v'},
@@ -261,11 +283,11 @@ static struct option long_options[] = {
 static void
 usage()
 {
-  fprintf(stderr, "Usage: "
+  pr2serr("Usage: "
           "sg_copy_results [--failed|--params|--receive|--status] [--help]\n"
-          "                       [--hex] [--list_id=ID] [--verbose] "
-          "[--version]\n"
-          "                       DEVICE\n"
+          "                       [--hex] [--list_id=ID] [--readonly] "
+          "[--verbose]\n"
+          "                       [--version] [--xfer_len=BTL] DEVICE\n"
           "  where:\n"
           "    --failed|-f          use FAILED SEGMENT DETAILS service "
           "action\n"
@@ -274,6 +296,7 @@ usage()
           "    --list_id=ID|-l ID   list identifier (default: 0)\n"
           "    --params|-p          use OPERATING PARAMETERS service "
           "action\n"
+          "    --readonly|-R        open DEVICE read-only (def: read-write)\n"
           "    --receive|-r         use RECEIVE DATA service action\n"
           "    --status|-s          use COPY STATUS service action\n"
           "    --verbose|-v         increase verbosity\n"
@@ -297,12 +320,13 @@ static const char * rec_copy_name_arr[] = {
 int
 main(int argc, char * argv[])
 {
-    int sg_fd, res, c;
+    int sg_fd, res, c, k;
     unsigned char * cpResultBuff = NULL;
     int xfer_len = 520;
     int sa = 3;
-    int list_id = 0;
+    uint32_t list_id = 0;
     int do_hex = 0;
+    int o_readonly = 0;
     int verbose = 0;
     const char * cp;
     const char * device_name = NULL;
@@ -313,7 +337,7 @@ main(int argc, char * argv[])
     while (1) {
         int option_index = 0;
 
-        c = getopt_long(argc, argv, "fhHl:prsvVx:", long_options,
+        c = getopt_long(argc, argv, "fhHl:prRsvVx:", long_options,
                         &option_index);
         if (c == -1)
             break;
@@ -330,17 +354,21 @@ main(int argc, char * argv[])
             usage();
             return 0;
         case 'l':
-            list_id = sg_get_num(optarg);
-            if (-1 == list_id) {
-                fprintf(stderr, "bad argument to '--list_id'\n");
+            k = sg_get_num(optarg);
+            if (-1 == k) {
+                pr2serr("bad argument to '--list_id'\n");
                 return SG_LIB_SYNTAX_ERROR;
             }
+            list_id = (uint32_t)k;
             break;
         case 'p':
             sa = 3;
             break;
         case 'r':
             sa = 1;
+            break;
+        case 'R':
+            ++o_readonly;
             break;
         case 's':
             sa = 0;
@@ -349,17 +377,17 @@ main(int argc, char * argv[])
             ++verbose;
             break;
         case 'V':
-            fprintf(stderr, ME "version: %s\n", version_str);
+            pr2serr(ME "version: %s\n", version_str);
             return 0;
         case 'x':
             xfer_len = sg_get_num(optarg);
             if (-1 == xfer_len) {
-                fprintf(stderr, "bad argument to '--xfer_len'\n");
+                pr2serr("bad argument to '--xfer_len'\n");
                 return SG_LIB_SYNTAX_ERROR;
             }
             break;
         default:
-            fprintf(stderr, "unrecognised option code 0x%x ??\n", c);
+            pr2serr("unrecognised option code 0x%x ??\n", c);
             usage();
             return SG_LIB_SYNTAX_ERROR;
         }
@@ -371,77 +399,55 @@ main(int argc, char * argv[])
         }
         if (optind < argc) {
             for (; optind < argc; ++optind)
-                fprintf(stderr, "Unexpected extra argument: %s\n",
-                        argv[optind]);
+                pr2serr("Unexpected extra argument: %s\n", argv[optind]);
             usage();
             return SG_LIB_SYNTAX_ERROR;
         }
     }
 
     if (NULL == device_name) {
-        fprintf(stderr, "missing device name!\n");
+        pr2serr("missing device name!\n");
         usage();
         return SG_LIB_SYNTAX_ERROR;
     }
     if (xfer_len >= MAX_XFER_LEN) {
-        fprintf(stderr, "xfer_len (%d) is out of range ( < %d)\n",
-                xfer_len, MAX_XFER_LEN);
+        pr2serr("xfer_len (%d) is out of range ( < %d)\n", xfer_len,
+                MAX_XFER_LEN);
         usage();
         return SG_LIB_SYNTAX_ERROR;
     }
 
     if (NULL == (cpResultBuff = (unsigned char *)malloc(xfer_len))) {
-            fprintf(stderr, ME "out of memory\n");
+            pr2serr(ME "out of memory\n");
             return SG_LIB_FILE_ERROR;
     }
     memset(cpResultBuff, 0x00, xfer_len);
 
-    sg_fd = sg_cmds_open_device(device_name, 0 /* rw */, verbose);
+    sg_fd = sg_cmds_open_device(device_name, o_readonly, verbose);
     if (sg_fd < 0) {
-        fprintf(stderr, ME "open error: %s: %s\n", device_name,
+        pr2serr(ME "open error: %s: %s\n", device_name,
                 safe_strerror(-sg_fd));
         return SG_LIB_FILE_ERROR;
     }
 
-    cp = rec_copy_name_arr[sa];
+    if ((sa < 0) || (sa >= (int)(sizeof(rec_copy_name_arr) / sizeof(char *))))
+        cp = "Out of range service action";
+    else
+        cp = rec_copy_name_arr[sa];
     if (verbose)
-        fprintf(stderr, ME "issue %s to device %s\n\t\txfer_len= %d (0x%x), "
-                "list_id=%d\n", cp, device_name, xfer_len, xfer_len,
-                list_id);
+        pr2serr(ME "issue %s to device %s\n\t\txfer_len= %d (0x%x), list_id=%"
+                PRIu32 "\n", cp, device_name, xfer_len, xfer_len, list_id);
 
-    /* In SPC-4 opcode 0x84, service actions have command names:
-     *    0x0    RECEIVE COPY STATUS(LID1)
-     *    0x1    RECEIVE COPY DATA(LID1)
-     *    0x3    RECEIVE COPY OPERATING PARAMETERS
-     *    0x4    RECEIVE COPY FAILURE DETAILS(LID1)
-     */
     res = sg_ll_receive_copy_results(sg_fd, sa, list_id, cpResultBuff,
                                      xfer_len, 1, verbose);
     ret = res;
-    switch (res) {
-    case 0:
-        break;
-    case SG_LIB_CAT_NOT_READY:
-        fprintf(stderr, "  SCSI %s failed, device not ready\n", cp);
-        break;
-    case SG_LIB_CAT_UNIT_ATTENTION:
-        fprintf(stderr, "  SCSI %s failed, unit attention\n", cp);
-        break;
-    case SG_LIB_CAT_ABORTED_COMMAND:
-        fprintf(stderr, "  SCSI %s failed, aborted command\n", cp);
-        break;
-    case SG_LIB_CAT_INVALID_OP:
-        fprintf(stderr, "  SCSI %s command not supported\n", cp);
-        break;
-    case SG_LIB_CAT_ILLEGAL_REQ:
-        fprintf(stderr, "  SCSI %s failed, bad field in cdb\n", cp);
-        break;
-    default:
-        fprintf(stderr, "  SCSI %s command error %d\n", cp, res);
-        break;
-    }
-    if (res != 0)
+    if (res) {
+        char b[80];
+
+        sg_get_category_sense_str(res, sizeof(b), b, verbose);
+        pr2serr("  SCSI %s failed: %s\n", cp, b);
         goto finish;
+    }
     if (1 == do_hex) {
         dStrHex((const char *)cpResultBuff, xfer_len, 1);
         res = 0;
@@ -470,7 +476,7 @@ finish:
     free(cpResultBuff);
     res = sg_cmds_close_device(sg_fd);
     if (res < 0) {
-        fprintf(stderr, ME "close error: %s\n", safe_strerror(-res));
+        pr2serr(ME "close error: %s\n", safe_strerror(-res));
         if (0 == ret)
             return SG_LIB_FILE_ERROR;
     }

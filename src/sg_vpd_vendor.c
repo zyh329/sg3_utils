@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006-2013 Douglas Gilbert.
+ * Copyright (c) 2006-2014 Douglas Gilbert.
  * All rights reserved.
  * Use of this source code is governed by a BSD-style
  * license that can be found in the BSD_LICENSE file.
@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #define __STDC_FORMAT_MACROS 1
 #include <inttypes.h>
@@ -41,20 +42,40 @@
 
 */
 
+/* vendor/product identifiers */
+#define VPD_VP_SEAGATE 0
+#define VPD_VP_RDAC 1
+#define VPD_VP_EMC 2
+#define VPD_VP_DDS 3
+#define VPD_VP_HP3PAR 4
+#define VPD_VP_LTO5 5
+#define VPD_VP_LTO6 6
+
 
 /* vendor VPD pages */
 #define VPD_V_HP3PAR 0xc0
 #define VPD_V_FIRM_SEA  0xc0
 #define VPD_V_UPR_EMC  0xc0
 #define VPD_V_HVER_RDAC  0xc0
+#define VPD_V_FVER_DDS 0xc0
+#define VPD_V_FVER_LTO6 0xc0
+#define VPD_V_DCRL_LTO5 0xc0
 #define VPD_V_DATC_SEA  0xc1
 #define VPD_V_FVER_RDAC  0xc1
+#define VPD_V_HVER_LTO6 0xc1
+#define VPD_V_DSN_LTO5 0xc1
 #define VPD_V_JUMP_SEA 0xc2
 #define VPD_V_SVER_RDAC 0xc2
+#define VPD_V_PCA_LTO6 0xc2
 #define VPD_V_DEV_BEH_SEA 0xc3
 #define VPD_V_FEAT_RDAC 0xc3
+#define VPD_V_MECH_LTO6 0xc3
 #define VPD_V_SUBS_RDAC 0xc4
+#define VPD_V_HEAD_LTO6 0xc4
+#define VPD_V_ACI_LTO6 0xc5
+#define VPD_V_DUCD_LTO5 0xc7
 #define VPD_V_EDID_RDAC 0xc8
+#define VPD_V_MPDS_LTO5 0xc8
 #define VPD_V_VAC_RDAC 0xc9
 #define VPD_V_RVSI_RDAC 0xca
 #define VPD_V_SAID_RDAC 0xd0
@@ -63,69 +84,161 @@
 #define DEF_ALLOC_LEN 252
 #define MX_ALLOC_LEN (0xc000 + 0x80)
 
-/* This structure is a duplicate of one of the same name in sg_vpd.c .
-   Take care that both have the same fields (and types). */
-struct svpd_values_name_t {
-    int value;       /* VPD number */
-    int subvalue;    /* used to disambiguate when different vendors use */
-                     /* the same VPD number */
-    int pdt;         /* peripheral device type id, -1 is the default */
-                     /* (all or not applicable) value */
-    int vendor;      /* vendor flag */
+struct svpd_vp_name_t {
+    int vp_num;       /* vendor/product identifier */
     const char * acron;
     const char * name;
 };
 
+/* This structure is a duplicate of one of the same name in sg_vpd.c .
+   Take care that both have the same fields (and types). */
+struct svpd_values_name_t {
+    int value;       /* VPD number */
+    int subvalue;    /* vendor/product identifier used to disambiguate */
+                     /* shared VPD numbers */
+    int pdt;         /* peripheral device type id, -1 is the default */
+                     /* (all or not applicable) value */
+    const char * acron;
+    const char * name;
+};
+
+
+int vpd_fetch_page_from_dev(int sg_fd, unsigned char * rp, int page,
+                            int mxlen, int vb, int * rlenp);
 
 /* Size of this array must match the array of the same name in sg_vpd.c */
 static unsigned char rsp_buff[MX_ALLOC_LEN + 2];
 
 
 /* Supported vendor specific VPD pages */
-/* 'subvalue' used to disambiguate; 'vendor' flag should be set */
 /* Arrange in alphabetical order by acronym */
-static struct svpd_values_name_t vendor_vpd_pg[] = {
-    {VPD_V_DATC_SEA, 0, -1, 1, "datc", "Date code (Seagate)"},
-    {VPD_V_DEV_BEH_SEA, 0, -1, 1, "devb", "Device behavior (Seagate)"},
-    {VPD_V_EDID_RDAC, 0, -1, 1, "edid", "Extended device identification "
-     "(RDAC)"},
-    {VPD_V_FEAT_RDAC, 1, -1, 1, "feat", "Feature Parameters (RDAC)"},
-    {VPD_V_FIRM_SEA, 0, -1, 1, "firm", "Firmware numbers (Seagate)"},
-    {VPD_V_FVER_RDAC, 1, -1, 1, "fver", "Firmware version (RDAC)"},
-    {VPD_V_HP3PAR, 2, -1, 1, "hp3par", "Volume information (HP/3PAR)"},
-    {VPD_V_HVER_RDAC, 3, -1, 1, "hver", "Hardware version (RDAC)"},
-    {VPD_V_JUMP_SEA, 0, -1, 1, "jump", "Jump setting (Seagate)"},
-    {VPD_V_RVSI_RDAC, 0, -1, 1, "rvsi", "Replicated volume source "
-     "identifier (RDAC)"},
-    {VPD_V_SAID_RDAC, 0, -1, 1, "said", "Storage array world wide name "
-     "(RDAC)"},
-    {VPD_V_SUBS_RDAC, 0, -1, 1, "sub", "Subsystem identifier (RDAC)"},
-    {VPD_V_SVER_RDAC, 1, -1, 1, "sver", "Software version (RDAC)"},
-    {VPD_V_UPR_EMC, 1, -1, 1, "upr", "Unit path report (EMC)"},
-    {VPD_V_VAC_RDAC, 0, -1, 1, "vac", "Volume access control (RDAC)"},
-    {0, 0, 0, 0, NULL, NULL},
+static struct svpd_vp_name_t vp_arr[] = {
+    {VPD_VP_DDS, "dds", "DDS tape family from IBM"},
+    {VPD_VP_EMC, "emc", "EMC (company)"},
+    {VPD_VP_HP3PAR, "hp3par", "3PAR array (HP was Left Hand)"},
+    {VPD_VP_LTO5, "lto5", "LTO-5 tape/systems (IBM)"},
+    {VPD_VP_LTO6, "lto6", "LTO-6 tape/systems (IBM)"},
+    {VPD_VP_RDAC, "rdac", "RDAC array (EMC Clariion)"},
+    {VPD_VP_SEAGATE, "sea", "Seagate disk"},
+    {0, NULL, NULL},
 };
 
+/* Supported vendor specific VPD pages */
+/* 'subvalue' holds vendor/product number to disambiguate */
+/* Arrange in alphabetical order by acronym */
+static struct svpd_values_name_t vendor_vpd_pg[] = {
+    {VPD_V_ACI_LTO6, VPD_VP_LTO6, -1, "aci", "ACI revision level (LTO-6)"},
+    {VPD_V_DATC_SEA, VPD_VP_SEAGATE, -1, "datc", "Date code (Seagate)"},
+    {VPD_V_DCRL_LTO5, VPD_VP_LTO5, -1, "dcrl" , "Drive component revision "
+     "levels (LTO-5)"},
+    {VPD_V_FVER_DDS, VPD_VP_DDS, -1, "ddsver", "Firmware revision (DDS)"},
+    {VPD_V_DEV_BEH_SEA, VPD_VP_SEAGATE, -1, "devb", "Device behavior "
+     "(Seagate)"},
+    {VPD_V_DSN_LTO5, VPD_VP_LTO5, -1, "dsn" , "Drive serial numbers (LTO-5)"},
+    {VPD_V_DUCD_LTO5, VPD_VP_LTO5, -1, "ducd" , "Device unique "
+     "configuration data (LTO-5)"},
+    {VPD_V_EDID_RDAC, VPD_VP_RDAC, -1, "edid", "Extended device "
+     "identification (RDAC)"},
+    {VPD_V_FEAT_RDAC, VPD_VP_RDAC, -1, "feat", "Feature Parameters (RDAC)"},
+    {VPD_V_FIRM_SEA, VPD_VP_SEAGATE, -1, "firm", "Firmware numbers "
+     "(Seagate)"},
+    {VPD_V_FVER_LTO6, VPD_VP_LTO6, -1, "frl" , "Firmware revision level "
+     "(LTO-6)"},
+    {VPD_V_FVER_RDAC, VPD_VP_RDAC, -1, "fver", "Firmware version (RDAC)"},
+    {VPD_V_HEAD_LTO6, VPD_VP_LTO6, -1, "head", "Head Assy revision level "
+     "(LTO-6)"},
+    {VPD_V_HP3PAR, VPD_VP_HP3PAR, -1, "hp3par", "Volume information "
+     "(HP/3PAR)"},
+    {VPD_V_HVER_LTO6, VPD_VP_LTO6, -1, "hrl", "Hardware revision level "
+     "(LTO-6)"},
+    {VPD_V_HVER_RDAC, VPD_VP_RDAC, -1, "hver", "Hardware version (RDAC)"},
+    {VPD_V_JUMP_SEA, VPD_VP_SEAGATE, -1, "jump", "Jump setting (Seagate)"},
+    {VPD_V_MECH_LTO6, VPD_VP_LTO6, -1, "mech", "Mechanism revision level "
+     "(LTO-6)"},
+    {VPD_V_MPDS_LTO5, VPD_VP_LTO5, -1, "mpds" , "Mode parameter default "
+     "settings (LTO-5)"},
+    {VPD_V_PCA_LTO6, VPD_VP_LTO6, -1, "pca", "PCA revision level (LTO-6)"},
+    {VPD_V_RVSI_RDAC, VPD_VP_RDAC, -1, "rvsi", "Replicated volume source "
+     "identifier (RDAC)"},
+    {VPD_V_SAID_RDAC, VPD_VP_RDAC, -1, "said", "Storage array world wide "
+     "name (RDAC)"},
+    {VPD_V_SUBS_RDAC, VPD_VP_RDAC, -1, "sub", "Subsystem identifier (RDAC)"},
+    {VPD_V_SVER_RDAC, VPD_VP_RDAC, -1, "sver", "Software version (RDAC)"},
+    {VPD_V_UPR_EMC, VPD_VP_EMC, -1, "upr", "Unit path report (EMC)"},
+    {VPD_V_VAC_RDAC, VPD_VP_RDAC, -1, "vac", "Volume access control (RDAC)"},
+    {0, 0, 0, NULL, NULL},
+};
+
+
+#ifdef __GNUC__
+static int pr2serr(const char * fmt, ...)
+        __attribute__ ((format (printf, 1, 2)));
+#else
+static int pr2serr(const char * fmt, ...);
+#endif
+
+
+static int
+pr2serr(const char * fmt, ...)
+{
+    va_list args;
+    int n;
+
+    va_start(args, fmt);
+    n = vfprintf(stderr, fmt, args);
+    va_end(args);
+    return n;
+}
+
 static const struct svpd_values_name_t *
-svpd_get_v_detail(int page_num, int subvalue, int pdt)
+svpd_get_v_detail(int page_num, int vp_num, int pdt)
 {
     const struct svpd_values_name_t * vnp;
-    int sv, ty;
+    int vp, ty;
 
-    sv = (subvalue < 0) ? 1 : 0;
+    vp = (vp_num < 0) ? 1 : 0;
     ty = (pdt < 0) ? 1 : 0;
     for (vnp = vendor_vpd_pg; vnp->acron; ++vnp) {
         if ((page_num == vnp->value) &&
-            (sv || (subvalue == vnp->subvalue)) &&
+            (vp || (vp_num == vnp->subvalue)) &&
             (ty || (pdt == vnp->pdt)))
             return vnp;
     }
     if (! ty)
-        return svpd_get_v_detail(page_num, subvalue, -1);
-    if (! sv)
+        return svpd_get_v_detail(page_num, vp_num, -1);
+    if (! vp)
         return svpd_get_v_detail(page_num, -1, -1);
     return NULL;
 }
+
+const struct svpd_values_name_t *
+svpd_find_vendor_by_num(int page_num, int vp_num)
+{
+    const struct svpd_values_name_t * vnp;
+
+    for (vnp = vendor_vpd_pg; vnp->acron; ++vnp) {
+        if ((page_num == vnp->value) &&
+            ((vp_num < 0) || (vp_num == vnp->subvalue)))
+            return vnp;
+    }
+    return NULL;
+}
+
+
+int
+svpd_find_vp_num_by_acron(const char * vp_ap)
+{
+    size_t len;
+    const struct svpd_vp_name_t * vpp;
+
+    for (vpp = vp_arr; vpp->acron; ++vpp) {
+        len = strlen(vpp->acron);
+        if (0 == strncmp(vpp->acron, vp_ap, len))
+            return vpp->vp_num;
+    }
+    return -1;
+}
+
 
 const struct svpd_values_name_t *
 svpd_find_vendor_by_acron(const char * ap)
@@ -139,13 +252,31 @@ svpd_find_vendor_by_acron(const char * ap)
     return NULL;
 }
 
+/* vp_num=-2 everthing, =-1 only vendor_product, else just that vp_num */
 void
-svpd_enumerate_vendor()
+svpd_enumerate_vendor(int vp_num)
 {
+    const struct svpd_vp_name_t * vpp;
     const struct svpd_values_name_t * vnp;
     int seen;
 
+    if (vp_num < 0) {
+        for (seen = 0, vpp = vp_arr; vpp->acron; ++vpp) {
+            if (vpp->name) {
+                if (! seen) {
+                    printf("\nVendor/product identifiers:\n");
+                    seen = 1;
+                }
+                printf("  %-10s %d      %s\n", vpp->acron,
+                       vpp->vp_num, vpp->name);
+            }
+        }
+    }
+    if (-1 == vp_num)
+        return;
     for (seen = 0, vnp = vendor_vpd_pg; vnp->acron; ++vnp) {
+        if ((vp_num >= 0) && (vp_num != vnp->subvalue))
+            continue;
         if (vnp->name) {
             if (! seen) {
                 printf("\nVendor specific VPD pages:\n");
@@ -155,6 +286,26 @@ svpd_enumerate_vendor()
                    vnp->value, vnp->subvalue, vnp->name);
         }
     }
+}
+
+int
+svpd_count_vendor_vpds(int num_vpd, int vp_num)
+{
+    const struct svpd_values_name_t * vnp;
+    int matches;
+
+    for (vnp = vendor_vpd_pg, matches = 0; vnp->acron; ++vnp) {
+        if ((num_vpd == vnp->value) && vnp->name) {
+            if ((vp_num < 0) || (vp_num == vnp->subvalue)) {
+                if (0 == matches)
+                    printf("Matching vendor specific VPD pages:\n");
+                ++matches;
+                printf("  %-10s 0x%02x,%d      %s\n", vnp->acron,
+                       vnp->value, vnp->subvalue, vnp->name);
+            }
+        }
+    }
+    return matches;
 }
 
 static void
@@ -173,8 +324,8 @@ decode_vpd_c0_hp3par(unsigned char * buff, int len)
     long offset;
 
     if (len < 24) {
-        fprintf(stderr, "HP/3PAR vendor specific VPD page length too "
-                "short=%d\n", len);
+        pr2serr("HP/3PAR vendor specific VPD page length too short=%d\n",
+                len);
         return;
     }
 
@@ -246,8 +397,8 @@ static void
 decode_firm_vpd_c0_sea(unsigned char * buff, int len)
 {
     if (len < 28) {
-        fprintf(stderr, "Seagate firmware numbers VPD page length too "
-                "short=%d\n", len);
+        pr2serr("Seagate firmware numbers VPD page length too short=%d\n",
+                len);
         return;
     }
     if (28 == len) {
@@ -274,6 +425,34 @@ decode_firm_vpd_c0_sea(unsigned char * buff, int len)
         printf("  Servo firmware product family and product family "
                "member: %.4s\n", buff + 56);
     }
+}
+
+static void
+decode_date_code_vpd_c1_sea(unsigned char * buff, int len)
+{
+    if (len < 20) {
+        pr2serr("Seagate Data code VPD page length too short=%d\n",
+                len);
+        return;
+    }
+    printf("  ETF log (mmddyyyy): %.8s\n", buff + 4);
+    printf("  Compile date code (mmddyyyy): %.8s\n", buff + 12);
+}
+
+static void
+decode_dev_beh_vpd_c3_sea(unsigned char * buff, int len)
+{
+    if (len < 25) {
+        pr2serr("Seagate Device behaviour VPD page length too short=%d\n",
+                len);
+        return;
+    }
+    printf("  Version number: %d\n", buff[4]);
+    printf("  Behaviour code: %d\n", buff[5]);
+    printf("  Behaviour code version number: %d\n", buff[6]);
+    printf("  ASCII family number: %.16s\n", buff + 7);
+    printf("  Number of interleaves: %d\n", buff[23]);
+    printf("  Default number of cache segments: %d\n", buff[24]);
 }
 
 static const char * lun_state_arr[] =
@@ -329,13 +508,12 @@ decode_upr_vpd_c0_emc(unsigned char * buff, int len)
     int k, ip_mgmt, vpp80, lun_z;
 
     if (len < 3) {
-        fprintf(stderr, "EMC upr VPD page [0xc0]: length too short=%d\n",
-                len);
+        pr2serr("EMC upr VPD page [0xc0]: length too short=%d\n", len);
         return;
     }
     if (buff[9] != 0x00) {
-        fprintf(stderr, "Unsupported page revision %d, decoding not "
-                "possible.\n" , buff[9]);
+        pr2serr("Unsupported page revision %d, decoding not possible.\n",
+                buff[9]);
         return;
     }
     printf("  LUN WWN: ");
@@ -405,13 +583,12 @@ decode_rdac_vpd_c0(unsigned char * buff, int len)
     char name[65];
 
     if (len < 3) {
-        fprintf(stderr, "Hardware Version VPD page length too "
-                "short=%d\n", len);
+        pr2serr("Hardware Version VPD page length too short=%d\n", len);
         return;
     }
     if (buff[4] != 'h' && buff[5] != 'w' && buff[6] != 'r') {
-        fprintf(stderr, "Invalid page identifier %c%c%c%c, decoding "
-                "not possible.\n" , buff[4], buff[5], buff[6], buff[7]);
+        pr2serr("Invalid page identifier %c%c%c%c, decoding not possible.\n",
+                buff[4], buff[5], buff[6], buff[7]);
         return;
     }
     printf("  Number of channels: %x\n", buff[8]);
@@ -452,13 +629,12 @@ decode_rdac_vpd_c1(unsigned char * buff, int len)
     char part[5];
 
     if (len < 3) {
-        fprintf(stderr, "Firmware Version VPD page length too "
-                "short=%d\n", len);
+        pr2serr("Firmware Version VPD page length too short=%d\n", len);
         return;
     }
     if (buff[4] != 'f' && buff[5] != 'w' && buff[6] != 'r') {
-        fprintf(stderr, "Invalid page identifier %c%c%c%c, decoding "
-                "not possible.\n" , buff[4], buff[5], buff[6], buff[7]);
+        pr2serr("Invalid page identifier %c%c%c%c, decoding not possible.\n",
+                buff[4], buff[5], buff[6], buff[7]);
         return;
     }
     printf("  Firmware Version: %x.%x.%x\n", buff[8], buff[9], buff[10]);
@@ -495,13 +671,12 @@ decode_rdac_vpd_c2(unsigned char * buff, int len)
     char part[5];
 
     if (len < 3) {
-        fprintf(stderr, "Software Version VPD page length too "
-                "short=%d\n", len);
+        pr2serr("Software Version VPD page length too short=%d\n", len);
         return;
     }
     if (buff[4] != 's' && buff[5] != 'w' && buff[6] != 'r') {
-        fprintf(stderr, "Invalid page identifier %c%c%c%c, decoding "
-                "not possible.\n" , buff[4], buff[5], buff[6], buff[7]);
+        pr2serr("Invalid page identifier %c%c%c%c, decoding not possible.\n",
+                buff[4], buff[5], buff[6], buff[7]);
         return;
     }
     printf("  Software Version: %x.%x.%x\n", buff[8], buff[9], buff[10]);
@@ -548,13 +723,12 @@ static void
 decode_rdac_vpd_c3(unsigned char * buff, int len)
 {
     if (len < 0x2c) {
-        fprintf(stderr, "Feature parameters VPD page length too "
-                "short=%d\n", len);
+        pr2serr("Feature parameters VPD page length too short=%d\n", len);
         return;
     }
     if (buff[4] != 'p' && buff[5] != 'r' && buff[6] != 'm') {
-        fprintf(stderr, "Invalid page identifier %c%c%c%c, decoding "
-                "not possible.\n" , buff[4], buff[5], buff[6], buff[7]);
+        pr2serr("Invalid page identifier %c%c%c%c, decoding not possible.\n",
+                buff[4], buff[5], buff[6], buff[7]);
         return;
     }
     printf("  Maximum number of drives per LUN: %d\n", buff[8]);
@@ -574,13 +748,12 @@ decode_rdac_vpd_c4(unsigned char * buff, int len)
     char slot_id[3];
 
     if (len < 0x1c) {
-        fprintf(stderr, "Subsystem identifier VPD page length too "
-                "short=%d\n", len);
+        pr2serr("Subsystem identifier VPD page length too short=%d\n", len);
         return;
     }
     if (buff[4] != 's' && buff[5] != 'u' && buff[6] != 'b') {
-        fprintf(stderr, "Invalid page identifier %c%c%c%c, decoding "
-                "not possible.\n" , buff[4], buff[5], buff[6], buff[7]);
+        pr2serr("Invalid page identifier %c%c%c%c, decoding not possible.\n",
+                buff[4], buff[5], buff[6], buff[7]);
         return;
     }
     memset(subsystem_id, 0, 17);
@@ -625,13 +798,13 @@ decode_rdac_vpd_c8(unsigned char * buff, int len)
     int uuid_len;
 
     if (len < 0xab) {
-        fprintf(stderr, "Extended Device Identification VPD page length too "
+        pr2serr("Extended Device Identification VPD page length too "
                 "short=%d\n", len);
         return;
     }
     if (buff[4] != 'e' && buff[5] != 'd' && buff[6] != 'i') {
-        fprintf(stderr, "Invalid page identifier %c%c%c%c, decoding "
-                "not possible.\n" , buff[4], buff[5], buff[6], buff[7]);
+        pr2serr("Invalid page identifier %c%c%c%c, decoding not possible.\n",
+                buff[4], buff[5], buff[6], buff[7]);
         return;
     }
 
@@ -686,18 +859,16 @@ static void
 decode_rdac_vpd_c9(unsigned char * buff, int len)
 {
     if (len < 3) {
-        fprintf(stderr, "Volume Access Control VPD page length too "
-                "short=%d\n", len);
+        pr2serr("Volume Access Control VPD page length too short=%d\n", len);
         return;
     }
     if (buff[4] != 'v' && buff[5] != 'a' && buff[6] != 'c') {
-        fprintf(stderr, "Invalid page identifier %c%c%c%c, decoding "
-                "not possible.\n" , buff[4], buff[5], buff[6], buff[7]);
+        pr2serr("Invalid page identifier %c%c%c%c, decoding not possible.\n",
+                buff[4], buff[5], buff[6], buff[7]);
         return;
     }
     if (buff[7] != '1') {
-        fprintf(stderr, "Invalid page version '%c' (should be 1)\n",
-                buff[7]);
+        pr2serr("Invalid page version '%c' (should be 1)\n", buff[7]);
     }
     printf("  AVT:");
     if (buff[8] & 0x80) {
@@ -736,13 +907,13 @@ decode_rdac_vpd_ca(unsigned char * buff, int len)
     int i;
 
     if (len < 16) {
-        fprintf(stderr, "Replicated Volume Source Identifier "
-                "VPD page length too short=%d\n", len);
+        pr2serr("Replicated Volume Source Identifier VPD page length too "
+                "short=%d\n", len);
         return;
     }
     if (buff[4] != 'r' && buff[5] != 'v' && buff[6] != 's') {
-        fprintf(stderr, "Invalid page identifier %c%c%c%c, decoding "
-                "not possible.\n" , buff[4], buff[5], buff[6], buff[7]);
+        pr2serr("Invalid page identifier %c%c%c%c, decoding not possible.\n",
+                buff[4], buff[5], buff[6], buff[7]);
         return;
     }
     if (buff[8] & 0x01) {
@@ -769,8 +940,8 @@ decode_rdac_vpd_d0(unsigned char * buff, int len)
     int i;
 
     if (len < 20) {
-        fprintf(stderr, "Storage Array World Wide Name "
-                "VPD page length too short=%d\n", len);
+        pr2serr("Storage Array World Wide Name VPD page length too "
+                "short=%d\n", len);
         return;
     }
     printf("  Storage Array WWN: ");
@@ -781,10 +952,125 @@ decode_rdac_vpd_d0(unsigned char * buff, int len)
     return;
 }
 
+
+static void
+decode_dds_vpd_c0(unsigned char * buff, int len)
+{
+    char firmware_rev[25];
+    char build_date[43];
+    char hw_conf[21];
+    char fw_conf[21];
+
+    if (len < 0xb3) {
+        pr2serr("Vendor-Unique Firmware revision page invalid length=%d\n",
+                len);
+        return;
+    }
+    memset(firmware_rev, 0x0, 25);
+    memcpy(firmware_rev, &buff[5], 24);
+
+    printf("  %s\n", firmware_rev);
+
+    memset(build_date, 0x0, 43);
+    memcpy(build_date, &buff[30], 42);
+
+    printf("  %s\n", build_date);
+
+    memset(hw_conf, 0x0, 21);
+    memcpy(hw_conf, &buff[73], 20);
+    printf("  %s\n", hw_conf);
+
+    memset(fw_conf, 0x0, 21);
+    memcpy(fw_conf, &buff[94], 20);
+    printf("  %s\n", fw_conf);
+    return;
+}
+
+static void
+decode_lto6_vpd_cx(unsigned char * buff, int len, int page)
+{
+    char str[32];
+    const char *comp = NULL;
+
+    if (len < 0x5c) {
+        pr2serr("Driver Component Revision Levels page invalid length=%d\n",
+                len);
+        return;
+    }
+    switch (page) {
+        case 0xc0:
+            comp = "Firmware";
+            break;
+        case 0xc1:
+            comp = "Hardware";
+            break;
+        case 0xc2:
+            comp = "PCA";
+            break;
+        case 0xc3:
+            comp = "Mechanism";
+            break;
+        case 0xc4:
+            comp = "Head Assy";
+            break;
+        case 0xc5:
+            comp = "ACI";
+            break;
+    }
+    if (!comp) {
+        pr2serr("Driver Component Revision Level invalid page=0x%02x\n",
+                page);
+        return;
+    }
+
+    memset(str, 0x0, 32);
+    memcpy(str, &buff[4], 26);
+    printf("  %s\n", str);
+
+    memset(str, 0x0, 32);
+    memcpy(str, &buff[30], 19);
+    printf("  %s\n", str);
+
+    memset(str, 0x0, 32);
+    memcpy(str, &buff[49], 24);
+    printf("  %s\n", str);
+
+    memset(str, 0x0, 32);
+    memcpy(str, &buff[73], 23);
+    printf("  %s\n", str);
+    return;
+}
+
+static void
+decode_lto5_dcrl(unsigned char * buff, int len)
+{
+    if (len < 0x2b) {
+        pr2serr("Driver Component Revision Levels page (LTO-5) invalid "
+                "length=%d\n", len);
+        return;
+    }
+    printf("  Code name: %.12s\n", buff + 4);
+    printf("  Time (hhmmss): %.7s\n", buff + 16);
+    printf("  Date (yyyymmdd): %.8s\n", buff + 23);
+    printf("  Platform: %.12s\n", buff + 31);
+}
+
+static void
+decode_lto5_dsn(unsigned char * buff, int len)
+{
+    if (len < 0x1c) {
+        pr2serr("Driver Serial Numbers page (LTO-5) invalid "
+                "length=%d\n", len);
+        return;
+    }
+    printf("  Manufacturing serial number: %.12s\n", buff + 4);
+    printf("  Reported serial number: %.12s\n", buff + 16);
+}
+
 /* Returns 0 if successful, see sg_ll_inquiry() plus SG_LIB_SYNTAX_ERROR for
    unsupported page */
 int
-svpd_decode_vendor(int sg_fd, int num_vpd, int subvalue, int maxlen,
+svpd_decode_vendor(int sg_fd, int num_vpd, int vp_num, int maxlen,
                    int do_hex, int do_raw, int do_long, int do_quiet,
                    int verbose)
 {
@@ -794,101 +1080,108 @@ svpd_decode_vendor(int sg_fd, int num_vpd, int subvalue, int maxlen,
     int alloc_len = maxlen;
 
     if (do_long) { ; }  /* unused, dummy to suppress warning */
-    vnp = svpd_get_v_detail(num_vpd, subvalue, -1);
+    vnp = svpd_get_v_detail(num_vpd, vp_num, -1);
     if (vnp && vnp->name)
         strcpy(name, vnp->name);
     else
         snprintf(name, sizeof(name) - 1, "Vendor VPD page=0x%x", num_vpd);
-    if (0 == alloc_len)
-        alloc_len = DEF_ALLOC_LEN;
-    if ((! do_raw) && (! do_quiet))
+    if (sg_fd >= 0) {
+        if (0 == alloc_len)
+            alloc_len = DEF_ALLOC_LEN;
+    }
+    if ((! do_raw) && (! do_quiet) && (do_hex < 2))
         printf("%s VPD Page:\n", name);
-    res = sg_ll_inquiry(sg_fd, 0, 1, num_vpd, rsp_buff, alloc_len, 1,
-                        verbose);
+    res = vpd_fetch_page_from_dev(sg_fd, rsp_buff, num_vpd, alloc_len,
+                                  verbose, &len);
     if (0 == res) {
-        len = rsp_buff[3] + 4;
-        if (num_vpd != rsp_buff[1]) {
-            fprintf(stderr, "invalid VPD response; probably not "
-                    "supported\n");
-            return SG_LIB_CAT_MALFORMED;
-        }
-        if (len > alloc_len) {
-            if ((0 == maxlen) && (len < MX_ALLOC_LEN)) {
-                res = sg_ll_inquiry(sg_fd, 0, 1, num_vpd, rsp_buff, len,
-                                    1, verbose);
-                if (res) {
-                    fprintf(stderr, "fetching 0x%x page "
-                            "(alloc_len=%d) failed\n", num_vpd, len);
-                    return res;
-                }
-            } else {
-                fprintf(stderr, ">>> warning: response length (%d) "
-                        "longer than requested (%d)\n", len, alloc_len);
-                len = alloc_len;
-            }
-        }
         if (do_raw)
             dStrRaw((const char *)rsp_buff, len);
         else if (do_hex)
-            dStrHex((const char *)rsp_buff, len, 0);
+            dStrHex((const char *)rsp_buff, len, ((1 == do_hex) ? 0 : -1));
         else {
             switch(num_vpd) {
                 case 0xc0:
-                    if (0 == subvalue)
+                    if (VPD_VP_SEAGATE == vp_num)
                         decode_firm_vpd_c0_sea(rsp_buff, len);
-                    else if (1 == subvalue)
+                    else if (VPD_VP_EMC == vp_num)
                         decode_upr_vpd_c0_emc(rsp_buff, len);
-                    else if (2 == subvalue)
+                    else if (VPD_VP_HP3PAR == vp_num)
                         decode_vpd_c0_hp3par(rsp_buff, len);
-                    else if (3 == subvalue)
+                    else if (VPD_VP_RDAC == vp_num)
                         decode_rdac_vpd_c0(rsp_buff, len);
+                    else if (VPD_VP_DDS == vp_num)
+                        decode_dds_vpd_c0(rsp_buff, len);
+                    else if (VPD_VP_LTO5 == vp_num)
+                        decode_lto5_dcrl(rsp_buff, len);
+                    else if (VPD_VP_LTO6 == vp_num)
+                        decode_lto6_vpd_cx(rsp_buff, len, num_vpd);
                     else
                         dStrHex((const char *)rsp_buff, len, 0);
                     break;
                 case 0xc1:
-                    if (1 == subvalue)
+                    if (VPD_VP_SEAGATE == vp_num)
+                        decode_date_code_vpd_c1_sea(rsp_buff, len);
+                    else if (VPD_VP_RDAC == vp_num)
                         decode_rdac_vpd_c1(rsp_buff, len);
+                    else if (VPD_VP_LTO5 == vp_num)
+                        decode_lto5_dsn(rsp_buff, len);
+                    else if (VPD_VP_LTO6 == vp_num)
+                        decode_lto6_vpd_cx(rsp_buff, len, num_vpd);
                     else
                         dStrHex((const char *)rsp_buff, len, 0);
                     break;
                 case 0xc2:
-                    if (1 == subvalue)
+                    if (VPD_VP_RDAC == vp_num)
                         decode_rdac_vpd_c2(rsp_buff, len);
+                    else if (VPD_VP_LTO6 == vp_num)
+                        decode_lto6_vpd_cx(rsp_buff, len, num_vpd);
                     else
                         dStrHex((const char *)rsp_buff, len, 0);
                     break;
                 case 0xc3:
-                    if (1 == subvalue)
+                    if (VPD_VP_SEAGATE == vp_num)
+                        decode_dev_beh_vpd_c3_sea(rsp_buff, len);
+                    else if (VPD_VP_RDAC == vp_num)
                         decode_rdac_vpd_c3(rsp_buff, len);
+                    else if (VPD_VP_LTO6 == vp_num)
+                        decode_lto6_vpd_cx(rsp_buff, len, num_vpd);
                     else
                         dStrHex((const char *)rsp_buff, len, 0);
                     break;
                 case 0xc4:
-                    if (0 == subvalue)
+                    if (VPD_VP_RDAC == vp_num)
                         decode_rdac_vpd_c4(rsp_buff, len);
+                    else if (VPD_VP_LTO6 == vp_num)
+                        decode_lto6_vpd_cx(rsp_buff, len, num_vpd);
+                    else
+                        dStrHex((const char *)rsp_buff, len, 0);
+                    break;
+                case 0xc5:
+                    if (VPD_VP_LTO6 == vp_num)
+                        decode_lto6_vpd_cx(rsp_buff, len, num_vpd);
                     else
                         dStrHex((const char *)rsp_buff, len, 0);
                     break;
                 case 0xc8:
-                    if (0 == subvalue)
+                    if (VPD_VP_RDAC == vp_num)
                         decode_rdac_vpd_c8(rsp_buff, len);
                     else
                         dStrHex((const char *)rsp_buff, len, 0);
                     break;
                 case 0xc9:
-                    if (0 == subvalue)
+                    if (VPD_VP_RDAC == vp_num)
                         decode_rdac_vpd_c9(rsp_buff, len);
                     else
                         dStrHex((const char *)rsp_buff, len, 0);
                     break;
                 case 0xca:
-                    if (0 == subvalue)
+                    if (VPD_VP_RDAC == vp_num)
                         decode_rdac_vpd_ca(rsp_buff, len);
                     else
                         dStrHex((const char *)rsp_buff, len, 0);
                     break;
                 case 0xd0:
-                    if (0 == subvalue)
+                    if (VPD_VP_RDAC == vp_num)
                         decode_rdac_vpd_d0(rsp_buff, len);
                     else
                         dStrHex((const char *)rsp_buff, len, 0);

@@ -46,7 +46,7 @@
 #include "sg_lib.h"
 #include "sg_pt.h"
 
-static const char * version_str = "1.04 20130829";
+static const char * version_str = "1.06 20131110";
 static const char * util_name = "sg_tst_excl2";
 
 /* This is a test program for checking O_EXCL on open() works. It uses
@@ -99,7 +99,7 @@ using namespace std::chrono;
 static mutex odd_count_mutex;
 static mutex console_mutex;
 static unsigned int odd_count;
-static unsigned int bounce_count;
+static unsigned int ebusy_count;
 
 
 static void
@@ -129,32 +129,27 @@ usage(void)
     printf("    -x                don't use O_EXCL on first thread "
            "(def: use\n"
            "                      O_EXCL on all threads)\n\n");
-    printf("Test O_EXCL open flag with sg driver. Each open/close "
-           "cycle with the\nO_EXCL flag does a double increment on "
-           "lba (using its first 4 bytes).\n");
+    printf("Test O_EXCL open flag with pass-through drivers. Each "
+           "open/close cycle with\nthe O_EXCL flag does a double increment "
+           "on lba (using its first 4 bytes).\n");
 }
 
 static int
-pt_err(int res, int sg_fd, struct sg_pt_base * ptp)
+pt_err(int res)
 {
     if (res < 0)
-        fprintf(stderr, "  pass through os error: %s\n",
-                    safe_strerror(-res));
+        fprintf(stderr, "  pass through os error: %s\n", safe_strerror(-res));
     else if (SCSI_PT_DO_BAD_PARAMS == res)
         fprintf(stderr, "  bad pass through setup\n");
     else if (SCSI_PT_DO_TIMEOUT == res)
         fprintf(stderr, "  pass through timeout\n");
     else
         fprintf(stderr, "  do_scsi_pt error=%d\n", res);
-    if (ptp)
-        destruct_scsi_pt_obj(ptp);
-    scsi_pt_close_device(sg_fd);
     return -1;
 }
 
 static int
-pt_cat_no_good(int cat, int sg_fd, struct sg_pt_base * ptp,
-               const unsigned char * sbp)
+pt_cat_no_good(int cat, struct sg_pt_base * ptp, const unsigned char * sbp)
 {
     int slen;
     char b[256];
@@ -182,9 +177,6 @@ pt_cat_no_good(int cat, int sg_fd, struct sg_pt_base * ptp,
         fprintf(stderr, "  unknown pt result category (%d)\n", cat);
         break;
     }
-    if (ptp)
-        destruct_scsi_pt_obj(ptp);
-    scsi_pt_close_device(sg_fd);
     return -1;
 }
 
@@ -200,7 +192,7 @@ pt_cat_no_good(int cat, int sg_fd, struct sg_pt_base * ptp,
  * returns -1 else returns 0 if first int read is even otherwise returns 1. */
 static int
 do_rd_inc_wr_twice(const char * dev_name, unsigned int lba, int block,
-                   int excl, int wait_ms, unsigned int & bounces)
+                   int excl, int wait_ms, unsigned int & ebusys)
 {
     int k, sg_fd, res, cat;
     int odd = 0;
@@ -226,7 +218,7 @@ do_rd_inc_wr_twice(const char * dev_name, unsigned int lba, int block,
 
     while (((sg_fd = scsi_pt_open_flags(dev_name, open_flags, 0)) < 0) &&
            (-EBUSY == sg_fd)) {
-        ++bounces;
+        ++ebusys;
         if (wait_ms > 0)
             this_thread::sleep_for(milliseconds{wait_ms});
         else if (0 == wait_ms)
@@ -237,7 +229,9 @@ do_rd_inc_wr_twice(const char * dev_name, unsigned int lba, int block,
     if (sg_fd < 0) {
         snprintf(ebuff, EBUFF_SZ,
                  "do_rd_inc_wr_twice: error opening file: %s", dev_name);
+        console_mutex.lock();
         perror(ebuff);
+        console_mutex.unlock();
         return -1;
     }
 
@@ -250,13 +244,19 @@ do_rd_inc_wr_twice(const char * dev_name, unsigned int lba, int block,
         set_scsi_pt_data_in(ptp, lb, READ16_REPLY_LEN);
         res = do_scsi_pt(ptp, sg_fd, 20 /* secs timeout */, 1);
         if (res) {
-            fprintf(stderr, "READ_16 do_scsi_pt() error\n");
-            pt_err(res, sg_fd, ptp);
+            console_mutex.lock();
+            fprintf(stderr, "READ_16 do_scsi_pt() submission error\n");
+            res = pt_err(res);
+            console_mutex.unlock();
+            goto err;
         }
         cat = get_scsi_pt_result_category(ptp);
         if (SCSI_PT_RESULT_GOOD != cat) {
+            console_mutex.lock();
             fprintf(stderr, "READ_16 do_scsi_pt() category problem\n");
-            return pt_cat_no_good(cat, sg_fd, ptp, sense_buffer);
+            console_mutex.unlock();
+            res = pt_cat_no_good(cat, ptp, sense_buffer);
+            goto err;
         }
 
         u = (lb[0] << 24) + (lb[1] << 16) + (lb[2] << 8) + lb[3];
@@ -283,16 +283,22 @@ do_rd_inc_wr_twice(const char * dev_name, unsigned int lba, int block,
         set_scsi_pt_data_out(ptp, lb, WRITE16_REPLY_LEN);
         res = do_scsi_pt(ptp, sg_fd, 20 /* secs timeout */, 1);
         if (res) {
-            fprintf(stderr, "WRITE_16 do_scsi_pt() error\n");
-            pt_err(res, sg_fd, ptp);
+            console_mutex.lock();
+            fprintf(stderr, "WRITE_16 do_scsi_pt() submission error\n");
+            res = pt_err(res);
+            console_mutex.unlock();
+            goto err;
         }
         cat = get_scsi_pt_result_category(ptp);
         if (SCSI_PT_RESULT_GOOD != cat) {
+            console_mutex.lock();
             fprintf(stderr, "WRITE_16 do_scsi_pt() category problem\n");
-            return pt_cat_no_good(cat, sg_fd, ptp, sense_buffer);
+            console_mutex.unlock();
+            res = pt_cat_no_good(cat, ptp, sense_buffer);
+            goto err;
         }
     }
-
+err:
     if (ptp)
         destruct_scsi_pt_obj(ptp);
     scsi_pt_close_device(sg_fd);
@@ -305,10 +311,11 @@ do_rd_inc_wr_twice(const char * dev_name, unsigned int lba, int block,
 #define INQ_CMD_LEN 6
 
 /* Send INQUIRY and fetches response. If okay puts PRODUCT ID field
- * in b (up to m_blen bytes). Returns 0 on success, else -1 . */
+ * in b (up to m_blen bytes). Does not use O_EXCL flag. Returns 0 on success,
+ * else -1 . */
 static int
-do_inquiry_prod_id(const char * dev_name, int block, int excl, int wait_ms,
-                   unsigned int & bounces, char * b, int b_mlen)
+do_inquiry_prod_id(const char * dev_name, int block, int wait_ms,
+                   unsigned int & ebusys, char * b, int b_mlen)
 {
     int sg_fd, res, cat;
     struct sg_pt_base * ptp = NULL;
@@ -321,11 +328,9 @@ do_inquiry_prod_id(const char * dev_name, int block, int excl, int wait_ms,
 
     if (! block)
         open_flags |= O_NONBLOCK;
-    if (excl)
-        open_flags |= O_EXCL;
     while (((sg_fd = scsi_pt_open_flags(dev_name, open_flags, 0)) < 0) &&
            (-EBUSY == sg_fd)) {
-        ++bounces;
+        ++ebusys;
         if (wait_ms > 0)
             this_thread::sleep_for(milliseconds{wait_ms});
         else if (0 == wait_ms)
@@ -347,13 +352,15 @@ do_inquiry_prod_id(const char * dev_name, int block, int excl, int wait_ms,
     set_scsi_pt_data_in(ptp, inqBuff, INQ_REPLY_LEN);
     res = do_scsi_pt(ptp, sg_fd, 20 /* secs timeout */, 1);
     if (res) {
-        fprintf(stderr, "INQUIRY do_scsi_pt() error\n");
-        pt_err(res, sg_fd, ptp);
+        fprintf(stderr, "INQUIRY do_scsi_pt() submission error\n");
+        res = pt_err(res);
+        goto err;
     }
     cat = get_scsi_pt_result_category(ptp);
     if (SCSI_PT_RESULT_GOOD != cat) {
         fprintf(stderr, "INQUIRY do_scsi_pt() category problem\n");
-        return pt_cat_no_good(cat, sg_fd, ptp, sense_buffer);
+        res = pt_cat_no_good(cat, ptp, sense_buffer);
+        goto err;
     }
 
     /* Good, so fetch Product ID from response, copy to 'b' */
@@ -366,6 +373,7 @@ do_inquiry_prod_id(const char * dev_name, int block, int excl, int wait_ms,
             b[b_mlen - 1] = '\0';
         }
     }
+err:
     if (ptp)
         destruct_scsi_pt_obj(ptp);
     close(sg_fd);
@@ -377,7 +385,7 @@ work_thread(const char * dev_name, unsigned int lba, int id, int block,
             int excl, int num, int wait_ms)
 {
     unsigned int thr_odd_count = 0;
-    unsigned int thr_bounce_count = 0;
+    unsigned int thr_ebusy_count = 0;
     int k, res;
 
     console_mutex.lock();
@@ -386,21 +394,22 @@ work_thread(const char * dev_name, unsigned int lba, int id, int block,
     console_mutex.unlock();
     for (k = 0; k < num; ++k) {
         res = do_rd_inc_wr_twice(dev_name, lba, block, excl, wait_ms,
-                                 thr_bounce_count);
+                                 thr_ebusy_count);
         if (res < 0)
             break;
         if (res)
             ++thr_odd_count;
     }
-    if (k < num) {
-        console_mutex.lock();
-        cerr << "thread id=" << id << " failed k=" << k << '\n';
-        console_mutex.unlock();
-    }
+    console_mutex.lock();
+    if (k < num)
+        cerr << "thread id=" << id << " FAILed at iteration: " << k << '\n';
+    else
+        cerr << "thread id=" << id << " normal exit" << '\n';
+    console_mutex.unlock();
 
     odd_count_mutex.lock();
     odd_count += thr_odd_count;
-    bounce_count += thr_bounce_count;
+    ebusy_count += thr_ebusy_count;
     odd_count_mutex.unlock();
 }
 
@@ -479,8 +488,8 @@ main(int argc, char * argv[])
     try {
 
         if (! force) {
-            res = do_inquiry_prod_id(dev_name, block, ! exclude_o_excl,
-                                     wait_ms, bounce_count, b, sizeof(b));
+            res = do_inquiry_prod_id(dev_name, block, wait_ms, ebusy_count,
+                                     b, sizeof(b));
             if (res) {
                 fprintf(stderr, "INQUIRY failed on %s\n", dev_name);
                 return 1;
@@ -512,7 +521,7 @@ main(int argc, char * argv[])
             delete vt[k];
 
         cout << "Expecting odd count of 0, got " << odd_count << endl;
-        cout << "Number of EBUSYs: bounce_count=" << bounce_count << endl;
+        cout << "Number of EBUSYs: " << ebusy_count << endl;
 
     }
     catch(system_error& e)  {

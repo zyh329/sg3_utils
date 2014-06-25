@@ -1,11 +1,11 @@
-.TH SG_COPY_RESULTS "8" "June 2012" "sg3_utils\-1.37" SG3_UTILS
+.TH SG_COPY_RESULTS "8" "May 2014" "sg3_utils\-1.39" SG3_UTILS
 .SH NAME
 sg_copy_results \- send SCSI RECEIVE COPY RESULTS command (XCOPY related)
 .SH SYNOPSIS
 .B sg_copy_results
 [\fI\-\-failed\fR|\fI\-\-params\fR|\fI\-\-receive\fR|\fI\-\-status\fR]
-[\fI\-\-help\fR] [\fI\-\-hex\fR] [\fI\-\-list_id=ID\fR] [\fI\-\-verbose\fR]
-[\fI\-\-version\fR] [\fI\-\-xfer_len=BTL\fR] \fIDEVICE\fR
+[\fI\-\-help\fR] [\fI\-\-hex\fR] [\fI\-\-list_id=ID\fR] [\fI\-\-readonly\fR]
+[\fI\-\-verbose\fR] [\fI\-\-version\fR] [\fI\-\-xfer_len=BTL\fR] \fIDEVICE\fR
 .SH DESCRIPTION
 .\" Add any additional description here
 .PP
@@ -25,20 +25,20 @@ changed. This utility uses the older, SPC\-3 XCOPY names.
 The command has four distinct modes of operation, distinguished by
 the service action field:
 .TP
-\fBCOPY STATUS\fR
+\fBCOPY STATUS  [SPC\-4: RECEIVE COPY STATUS(LID1)]\fR
 Displays the current status of the EXTENDED COPY command identified by
 the list id field.
 .TP
-\fBRECEIVE DATA\fR
+\fBRECEIVE DATA  [SPC\-4: RECEIVE COPY DATA(LID1)]\fR
 Return the held data read by the EXTENDED COPY command identified by
 the list id field. This option is only meaningful if the respective
 segment descriptor are supported.
 .TP
-\fBOPERATING PARAMETERS\fR
+\fBOPERATING PARAMETERS  [SPC\-4: RECEIVE COPY OPERATING PARAMETERS]\fR
 Return copy manager operating parameters. This option is also useful
 to determine if the SCSI Extended Copy facility is supported.
 .TP
-\fBFAILED SEGMENT DETAILS\fR
+\fBFAILED SEGMENT DETAILS  [SPC\-4: RECEIVE COPY FAILURE DETAILS(LID1)]\fR
 Return copy target device sense data and other information about any
 failed segments.
 
@@ -60,6 +60,10 @@ sets the list identifier field to \fIID\fR (default: 0).
 \fB\-p\fR, \fB\-\-params\fR
 sets the service action field to OPERATING PARAMETERS [3].
 This is the default.
+.TP
+\fB\-R\fR, \fB\-\-readonly\fR
+open the \fIDEVICE\fR read\-only (e.g. in Unix with the O_RDONLY flag).
+The default is to open it read\-write.
 .TP
 \fB\-r\fR, \fB\-\-receive\fR
 sets the service action field to RECEIVE DATA [1].
@@ -110,7 +114,7 @@ Written by Douglas Gilbert.
 .SH "REPORTING BUGS"
 Report bugs to <dgilbert at interlog dot com>.
 .SH COPYRIGHT
-Copyright \(co 2012\-2013 Hannes Reinecke and Douglas Gilbert
+Copyright \(co 2012\-2014 Hannes Reinecke and Douglas Gilbert
 .br
 This software is distributed under a FreeBSD license. There is NO
 warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.

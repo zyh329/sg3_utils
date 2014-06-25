@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999-2013 Douglas Gilbert.
+ * Copyright (c) 1999-2014 Douglas Gilbert.
  * All rights reserved.
  * Use of this source code is governed by a BSD-style
  * license that can be found in the BSD_LICENSE file.
@@ -510,7 +510,7 @@ static const char * sdata_src[] = {
 
 
 /* Decode descriptor format sense descriptors (assumes sense buffer is
-   in descriptor format) */
+ * in descriptor format) */
 static void
 sg_get_sense_descriptors_str(const unsigned char * sense_buffer, int sb_len,
                              int blen, char * b)
@@ -572,8 +572,9 @@ sg_get_sense_descriptors_str(const unsigned char * sense_buffer, int sb_len,
                     processed = 0;
                     break;
                 }
-                n += my_snprintf(b + n, blen - n, "    Error in %s byte %d",
-                                 (descp[4] & 0x40) ? "Command" : "Data",
+                n += my_snprintf(b + n, blen - n, "    Error in %s: byte %d",
+                                 (descp[4] & 0x40) ? "Command" :
+                                                     "Data parameters",
                                  (descp[5] << 8) | descp[6]);
                 if (descp[4] & 0x08) {
                     n += my_snprintf(b + n, blen - n, " bit %d\n",
@@ -947,8 +948,9 @@ sg_get_sense_str(const char * leadin, const unsigned char * sense_buffer,
                 switch (ssh.sense_key) {
                 case SPC_SK_ILLEGAL_REQUEST:
                     r += my_snprintf(b + r, blen - r, "  Sense Key Specific: "
-                             "Error in %s byte %d",
-                             ((sense_buffer[15] & 0x40) ? "Command" : "Data"),
+                             "Error in %s: byte %d",
+                             ((sense_buffer[15] & 0x40) ? "Command" :
+                                                          "Data parameters"),
                              (sense_buffer[16] << 8) | sense_buffer[17]);
                     if (sense_buffer[15] & 0x08)
                         r += my_snprintf(b + r, blen - r, " bit %d\n",
@@ -1092,7 +1094,7 @@ sg_err_category_sense(const unsigned char * sense_buffer, int sb_len)
 
     if ((sense_buffer && (sb_len > 2)) &&
         (sg_scsi_normalize_sense(sense_buffer, sb_len, &ssh))) {
-        switch (ssh.sense_key) {
+        switch (ssh.sense_key) {        /* 0 to 0x1f */
         case SPC_SK_NO_SENSE:
             return SG_LIB_CAT_NO_SENSE;
         case SPC_SK_RECOVERED_ERROR:
@@ -1113,20 +1115,27 @@ sg_err_category_sense(const unsigned char * sense_buffer, int sb_len)
                 return SG_LIB_CAT_ILLEGAL_REQ;
             break;
         case SPC_SK_ABORTED_COMMAND:
-            return SG_LIB_CAT_ABORTED_COMMAND;
+            if (0x10 == ssh.asc)
+                return SG_LIB_CAT_PROTECTION;
+            else
+                return SG_LIB_CAT_ABORTED_COMMAND;
         case SPC_SK_MISCOMPARE:
             return SG_LIB_CAT_MISCOMPARE;
         case SPC_SK_DATA_PROTECT:
+            return SG_LIB_CAT_DATA_PROTECT;
+        case SPC_SK_COPY_ABORTED:
+            return SG_LIB_CAT_COPY_ABORTED;
         case SPC_SK_COMPLETED:
+        case SPC_SK_VOLUME_OVERFLOW:
             return SG_LIB_CAT_SENSE;
         default:
-            ;   /* rare and obsolete sense keys return SG_LIB_CAT_SENSE */
+            ;   /* reserved and vendor specific sense keys fall through */
         }
     }
     return SG_LIB_CAT_SENSE;
 }
 
-/* gives wrong answer for variable length command (opcode=0x7f) */
+/* Beware: gives wrong answer for variable length command (opcode=0x7f) */
 int
 sg_get_command_size(unsigned char opcode)
 {
@@ -1259,8 +1268,8 @@ sg_get_opcode_sa_name(unsigned char cmd_byte0, int service_action,
         if (vnp)
             my_snprintf(buff, buff_len, "%s", vnp->name);
         else
-            my_snprintf(buff, buff_len, "Extended copy, service action=0x%x",
-                        service_action);
+            my_snprintf(buff, buff_len, "Third party copy out, service "
+                        "action=0x%x", service_action);
         break;
     case SG_RECEIVE_COPY:
         /* 'Receive copy results' was renamed 'Third party copy in' in
@@ -1270,15 +1279,15 @@ sg_get_opcode_sa_name(unsigned char cmd_byte0, int service_action,
         if (vnp)
             my_snprintf(buff, buff_len, "%s", vnp->name);
         else
-            my_snprintf(buff, buff_len, "Receive copy, service action=0x%x",
-                        service_action);
+            my_snprintf(buff, buff_len, "Third party copy in, service "
+                        "action=0x%x", service_action);
         break;
     case SG_READ_BUFFER:
         /* spc4r34 requested treating mode as service action */
         vnp = get_value_name(sg_lib_read_buff_arr, service_action,
                              peri_type);
         if (vnp)
-            my_snprintf(buff, buff_len, "Read buffer (%s)\n", vnp->name);
+            my_snprintf(buff, buff_len, "Read buffer, %s", vnp->name);
         else
             my_snprintf(buff, buff_len, "Read buffer, mode=0x%x",
                         service_action);
@@ -1288,9 +1297,18 @@ sg_get_opcode_sa_name(unsigned char cmd_byte0, int service_action,
         vnp = get_value_name(sg_lib_write_buff_arr, service_action,
                              peri_type);
         if (vnp)
-            my_snprintf(buff, buff_len, "Write buffer (%s)\n", vnp->name);
+            my_snprintf(buff, buff_len, "Write buffer, %s", vnp->name);
         else
             my_snprintf(buff, buff_len, "Write buffer, mode=0x%x",
+                        service_action);
+        break;
+    case SG_SANITIZE:
+        vnp = get_value_name(sg_lib_sanitize_sa_arr, service_action,
+                             peri_type);
+        if (vnp)
+            my_snprintf(buff, buff_len, "%s", vnp->name);
+        else
+            my_snprintf(buff, buff_len, "Sanitize, service action=0x%x",
                         service_action);
         break;
     default:
@@ -1377,10 +1395,143 @@ sg_vpd_dev_id_iter(const unsigned char * initial_desig_desc, int page_len,
     return (k == page_len) ? -1 : -2;
 }
 
+static const char * bad_sense_cat = "Bad sense category";
+
+/* Yield string associated with sense++ category. Returns 'buff' (or pointer
+ * to "Bad sense category" if 'buff' is NULL). If sense_cat unknown then
+ * yield "Sense category: <sense_cat>" string. */
+const char *
+sg_get_category_sense_str(int sense_cat, int buff_len, char * buff,
+                          int verbose)
+{
+    int n;
+
+    if (NULL == buff)
+        return bad_sense_cat;
+    if (buff_len <= 0)
+        return buff;
+    switch (sense_cat) {
+    case SG_LIB_CAT_CLEAN:              /* 0 */
+        snprintf(buff, buff_len, "No errors");
+        break;
+    case SG_LIB_SYNTAX_ERROR:           /* 1 */
+        snprintf(buff, buff_len, "Syntax error");
+        break;
+    case SG_LIB_CAT_NOT_READY:          /* 2 */
+        n = snprintf(buff, buff_len, "Not ready");
+        if (verbose && (n < (buff_len - 1)))
+            snprintf(buff + n, buff_len - n, " sense key");
+        break;
+    case SG_LIB_CAT_MEDIUM_HARD:        /* 3 */
+        n = snprintf(buff, buff_len, "Medium or hardware error");
+        if (verbose && (n < (buff_len - 1)))
+            snprintf(buff + n, buff_len - n, " sense key (plus blank check)");
+        break;
+    case SG_LIB_CAT_ILLEGAL_REQ:        /* 5 */
+        n = snprintf(buff, buff_len, "Illegal request");
+        if (verbose && (n < (buff_len - 1)))
+            snprintf(buff + n, buff_len - n, " sense key, apart from Invalid "
+                     "opcode");
+        break;
+    case SG_LIB_CAT_UNIT_ATTENTION:     /* 6 */
+        n = snprintf(buff, buff_len, "Unit attention");
+        if (verbose && (n < (buff_len - 1)))
+            snprintf(buff + n, buff_len - n, " sense key");
+        break;
+    case SG_LIB_CAT_DATA_PROTECT:       /* 7 */
+        n = snprintf(buff, buff_len, "Data protect");
+        if (verbose && (n < (buff_len - 1)))
+            snprintf(buff + n, buff_len - n, " sense key, write protected "
+                     "media?");
+        break;
+    case SG_LIB_CAT_INVALID_OP:         /* 9 */
+        n = snprintf(buff, buff_len, "Illegal request, invalid opcode");
+        if (verbose && (n < (buff_len - 1)))
+            snprintf(buff + n, buff_len - n, " sense key");
+        break;
+    case SG_LIB_CAT_COPY_ABORTED:       /* 10 */
+        n = snprintf(buff, buff_len, "Copy aborted");
+        if (verbose && (n < (buff_len - 1)))
+            snprintf(buff + n, buff_len - n, " sense key");
+        break;
+    case SG_LIB_CAT_ABORTED_COMMAND:    /* 11 */
+        n = snprintf(buff, buff_len, "Aborted command");
+        if (verbose && (n < (buff_len - 1)))
+            snprintf(buff + n, buff_len - n, " sense key, other than "
+                     "protection related (asc=0x10)");
+        break;
+    case SG_LIB_CAT_MISCOMPARE:         /* 14 */
+        n = snprintf(buff, buff_len, "Miscompare");
+        if (verbose && (n < (buff_len - 1)))
+            snprintf(buff + n, buff_len - n, " sense key");
+        break;
+    case SG_LIB_FILE_ERROR:             /* 15 */
+        snprintf(buff, buff_len, "File error");
+        break;
+    case SG_LIB_CAT_ILLEGAL_REQ_WITH_INFO:  /* 17 */
+        snprintf(buff, buff_len, "Illegal request with info");
+        break;
+    case SG_LIB_CAT_MEDIUM_HARD_WITH_INFO:  /* 18 */
+        snprintf(buff, buff_len, "Medium or hardware error with info");
+        break;
+    case SG_LIB_CAT_NO_SENSE:           /* 20 */
+        n = snprintf(buff, buff_len, "No sense key");
+        if (verbose && (n < (buff_len - 1)))
+            snprintf(buff + n, buff_len - n, " probably additional sense "
+                     "information");
+        break;
+    case SG_LIB_CAT_RECOVERED:          /* 21 */
+        n = snprintf(buff, buff_len, "Recovered error");
+        if (verbose && (n < (buff_len - 1)))
+            snprintf(buff + n, buff_len - n, " sense key");
+        break;
+    case SG_LIB_CAT_RES_CONFLICT:       /* 24 */
+        n = snprintf(buff, buff_len, "Reservation conflict");
+        if (verbose && (n < (buff_len - 1)))
+            snprintf(buff + n, buff_len - n, " SCSI status");
+        break;
+    case SG_LIB_CAT_TIMEOUT:            /* 33 */
+        snprintf(buff, buff_len, "SCSI command timeout");
+        break;
+    case SG_LIB_CAT_PROTECTION:         /* 40 */
+        n = snprintf(buff, buff_len, "Aborted command, protection");
+        if (verbose && (n < (buff_len - 1)))
+            snprintf(buff + n, buff_len - n, " information (PI) problem");
+        break;
+    case SG_LIB_CAT_PROTECTION_WITH_INFO: /* 41 */
+        n = snprintf(buff, buff_len, "Aborted command with info, protection");
+        if (verbose && (n < (buff_len - 1)))
+            snprintf(buff + n, buff_len - n, " information (PI) problem");
+        break;
+    case SG_LIB_CAT_MALFORMED:          /* 97 */
+        n = snprintf(buff, buff_len, "Malformed response");
+        if (verbose && (n < (buff_len - 1)))
+            snprintf(buff + n, buff_len - n, " to SCSI command");
+        break;
+    case SG_LIB_CAT_SENSE:              /* 98 */
+        n = snprintf(buff, buff_len, "Some other sense data problem");
+        if (verbose && (n < (buff_len - 1)))
+            snprintf(buff + n, buff_len - n, ", try '-v' option for more "
+                     "information");
+        break;
+    case SG_LIB_CAT_OTHER:              /* 99 */
+        n = snprintf(buff, buff_len, "Some other error/warning has occurred");
+        if (verbose && (n < (buff_len - 1)))
+            snprintf(buff + n, buff_len - n, ", possible transport of driver "
+                     "issue");
+    default:
+        n = snprintf(buff, buff_len, "Sense category: %d", sense_cat);
+        if (verbose && (n < (buff_len - 1)))
+            snprintf(buff + n, buff_len - n, ", try '-v' option for more "
+                     "information");
+        break;
+    }
+    return buff;
+}
 
 /* safe_strerror() contributed by Clayton Weaver <cgweav at email dot com>
-   Allows for situation in which strerror() is given a wild value (or the
-   C library is incomplete) and returns NULL. Still not thread safe.
+ * Allows for situation in which strerror() is given a wild value (or the
+ * C library is incomplete) and returns NULL. Still not thread safe.
  */
 
 static char safe_errbuf[64] = {'u', 'n', 'k', 'n', 'o', 'w', 'n', ' ',
@@ -1406,11 +1557,11 @@ safe_strerror(int errnum)
 
 
 /* Note the ASCII-hex output goes to stdout. [Most other output from functions
-   in this file go to sg_warnings_strm (default stderr).]
-   'no_ascii' allows for 3 output types:
-       > 0     each line has address then up to 16 ASCII-hex bytes
-       = 0     in addition, the bytes are listed in ASCII to the right
-       < 0     only the ASCII-hex bytes are listed (i.e. without address) */
+ * in this file go to sg_warnings_strm (default stderr).]
+ * 'no_ascii' allows for 3 output types:
+ *     > 0     each line has address then up to 16 ASCII-hex bytes
+ *     = 0     in addition, the bytes are listed in ASCII to the right
+ *     < 0     only the ASCII-hex bytes are listed (i.e. without address) */
 static void
 dStrHexFp(const char* str, int len, int no_ascii, FILE * fp)
 {
@@ -1419,7 +1570,7 @@ dStrHexFp(const char* str, int len, int no_ascii, FILE * fp)
     unsigned char c;
     char buff[82];
     int a = 0;
-    const int bpstart = 5;
+    int bpstart = 5;
     const int cpstart = 60;
     int cpos = cpstart;
     int bpos = bpstart;
@@ -1428,14 +1579,20 @@ dStrHexFp(const char* str, int len, int no_ascii, FILE * fp)
     if (len <= 0)
         return;
     blen = (int)sizeof(buff);
-    formatstr = (0 == no_ascii) ? "%.76s\n" : "%.56s\n";
+    if (0 == no_ascii)  /* address at left and ASCII at right */
+        formatstr = "%.76s\n";
+    else if (no_ascii > 0)
+        formatstr = "%.58s\n";
+    else /* negative: no address at left and no ASCII at right */
+        formatstr = "%.48s\n";
     memset(buff, ' ', 80);
     buff[80] = '\0';
     if (no_ascii < 0) {
+        bpstart = 0;
+        bpos = bpstart;
         for (k = 0; k < len; k++) {
             c = *p++;
-            bpos += 3;
-            if (bpos == (bpstart + (9 * 3)))
+            if (bpos == (bpstart + (8 * 3)))
                 bpos++;
             my_snprintf(&buff[bpos], blen - bpos, "%.2x",
                         (int)(unsigned char)c);
@@ -1444,7 +1601,8 @@ dStrHexFp(const char* str, int len, int no_ascii, FILE * fp)
                 fprintf(fp, formatstr, buff);
                 bpos = bpstart;
                 memset(buff, ' ', 80);
-            }
+            } else
+                bpos += 3;
         }
         if (bpos > bpstart) {
             buff[bpos + 2] = '\0';
@@ -1555,8 +1713,8 @@ dStrHexStr(const char* str, int len, const char * leadin, int format,
 }
 
 /* Returns 1 when executed on big endian machine; else returns 0.
-   Useful for displaying ATA identify words (which need swapping on a
-   big endian machine). */
+ * Useful for displaying ATA identify words (which need swapping on a
+ * big endian machine). */
 int
 sg_is_big_endian()
 {
@@ -1581,15 +1739,15 @@ swapb_ushort(unsigned short u)
 }
 
 /* Note the ASCII-hex output goes to stdout. [Most other output from functions
-   in this file go to sg_warnings_strm (default stderr).]
-   'no_ascii' allows for 3 output types:
-       > 0     each line has address then up to 8 ASCII-hex 16 bit words
-       = 0     in addition, the ASCI bytes pairs are listed to the right
-       = -1    only the ASCII-hex words are listed (i.e. without address)
-       = -2    only the ASCII-hex words, formatted for "hdparm --Istdin"
-       < -2    same as -1
-   If 'swapb' non-zero then bytes in each word swapped. Needs to be set
-   for ATA IDENTIFY DEVICE response on big-endian machines. */
+ * in this file go to sg_warnings_strm (default stderr).]
+ * 'no_ascii' allows for 3 output types:
+ *     > 0     each line has address then up to 8 ASCII-hex 16 bit words
+ *     = 0     in addition, the ASCI bytes pairs are listed to the right
+ *     = -1    only the ASCII-hex words are listed (i.e. without address)
+ *     = -2    only the ASCII-hex words, formatted for "hdparm --Istdin"
+ *     < -2    same as -1
+ * If 'swapb' non-zero then bytes in each word swapped. Needs to be set
+ * for ATA IDENTIFY DEVICE response on big-endian machines. */
 void
 dWordHex(const unsigned short* words, int num, int no_ascii, int swapb)
 {
@@ -1675,29 +1833,50 @@ dWordHex(const unsigned short* words, int num, int no_ascii, int swapb)
 }
 
 /* If the number in 'buf' can be decoded or the multiplier is unknown
-   then -1 is returned. Accepts a hex prefix (0x or 0X) or a decimal
-   multiplier suffix (as per GNU's dd (since 2002: SI and IEC 60027-2)).
-   Main (SI) multipliers supported: K, M, G. */
+ * then -1 is returned. Accepts a hex prefix (0x or 0X) or a decimal
+ * multiplier suffix (as per GNU's dd (since 2002: SI and IEC 60027-2)).
+ * Main (SI) multipliers supported: K, M, G. Ignore leading spaces and
+ * tabs; accept comma, space, tab and hash as terminator. */
 int
 sg_get_num(const char * buf)
 {
     int res, num, n, len;
     unsigned int unum;
     char * cp;
+    const char * b;
     char c = 'c';
     char c2, c3;
+    char lb[16];
 
     if ((NULL == buf) || ('\0' == buf[0]))
         return -1;
     len = strlen(buf);
-    if (('0' == buf[0]) && (('x' == buf[1]) || ('X' == buf[1]))) {
-        res = sscanf(buf + 2, "%x", &unum);
+    n = strspn(buf, " \t");
+    if (n > 0) {
+        if (n == len)
+            return -1;
+        buf += n;
+        len -=n;
+    }
+    /* following hack to keep C++ happy */
+    cp = strpbrk((char *)buf, " \t,#");
+    if (cp) {
+        len = cp - buf;
+        n = (int)sizeof(lb) - 1;
+        len = (len < n) ? len : n;
+        memcpy(lb, buf, len);
+        lb[len] = '\0';
+        b = lb;
+    } else
+        b = buf;
+    if (('0' == b[0]) && (('x' == b[1]) || ('X' == b[1]))) {
+        res = sscanf(b + 2, "%x", &unum);
         num = unum;
-    } else if ('H' == toupper((int)buf[len - 1])) {
-        res = sscanf(buf, "%x", &unum);
+    } else if ('H' == toupper((int)b[len - 1])) {
+        res = sscanf(b, "%x", &unum);
         num = unum;
     } else
-        res = sscanf(buf, "%d%c%c%c", &num, &c, &c2, &c3);
+        res = sscanf(b, "%d%c%c%c", &num, &c, &c2, &c3);
     if (res < 1)
         return -1LL;
     else if (1 == res)
@@ -1739,9 +1918,9 @@ sg_get_num(const char * buf)
                 return num * 1073741824;
             return -1;
         case 'X':
-            cp = (char *)strchr(buf, 'x');
+            cp = (char *)strchr(b, 'x');
             if (NULL == cp)
-                cp = (char *)strchr(buf, 'X');
+                cp = (char *)strchr(b, 'X');
             if (cp) {
                 n = sg_get_num(cp + 1);
                 if (-1 != n)
@@ -1758,9 +1937,9 @@ sg_get_num(const char * buf)
 }
 
 /* If the number in 'buf' can not be decoded then -1 is returned. Accepts a
-   hex prefix (0x or 0X) or a 'h' (or 'H') suffix; otherwise decimal is
-   assumed. Does not accept multipliers. Accept a comma (","), a whitespace
-   or newline as terminator.  */
+ * hex prefix (0x or 0X) or a 'h' (or 'H') suffix; otherwise decimal is
+ * assumed. Does not accept multipliers. Accept a comma (","), a whitespace
+ * or newline as terminator. */
 int
 sg_get_num_nomult(const char * buf)
 {
@@ -1790,30 +1969,51 @@ sg_get_num_nomult(const char * buf)
 }
 
 /* If the number in 'buf' can be decoded or the multiplier is unknown
-   then -1LL is returned. Accepts a hex prefix (0x or 0X) or a decimal
-   multiplier suffix (as per GNU's dd (since 2002: SI and IEC 60027-2)).
-   Main (SI) multipliers supported: K, M, G, T, P. */
+ * then -1LL is returned. Accepts a hex prefix (0x or 0X) or a decimal
+ * multiplier suffix (as per GNU's dd (since 2002: SI and IEC 60027-2)).
+ * Main (SI) multipliers supported: K, M, G, T, P. Ignore leading spaces
+ * and tabs; accept comma, space, tab and hash as terminator. */
 int64_t
 sg_get_llnum(const char * buf)
 {
-    int res, len;
+    int res, len, n;
     int64_t num, ll;
     uint64_t unum;
     char * cp;
+    const char * b;
     char c = 'c';
     char c2, c3;
+    char lb[32];
 
     if ((NULL == buf) || ('\0' == buf[0]))
         return -1LL;
     len = strlen(buf);
-    if (('0' == buf[0]) && (('x' == buf[1]) || ('X' == buf[1]))) {
-        res = sscanf(buf + 2, "%" SCNx64 "", &unum);
+    n = strspn(buf, " \t");
+    if (n > 0) {
+        if (n == len)
+            return -1LL;
+        buf += n;
+        len -=n;
+    }
+    /* following hack to keep C++ happy */
+    cp = strpbrk((char *)buf, " \t,#");
+    if (cp) {
+        len = cp - buf;
+        n = (int)sizeof(lb) - 1;
+        len = (len < n) ? len : n;
+        memcpy(lb, buf, len);
+        lb[len] = '\0';
+        b = lb;
+    } else
+        b = buf;
+    if (('0' == b[0]) && (('x' == b[1]) || ('X' == b[1]))) {
+        res = sscanf(b + 2, "%" SCNx64 "", &unum);
         num = unum;
-    } else if ('H' == toupper((int)buf[len - 1])) {
-        res = sscanf(buf, "%" SCNx64 "", &unum);
+    } else if ('H' == toupper((int)b[len - 1])) {
+        res = sscanf(b, "%" SCNx64 "", &unum);
         num = unum;
     } else
-        res = sscanf(buf, "%" SCNd64 "%c%c%c", &num, &c, &c2, &c3);
+        res = sscanf(b, "%" SCNd64 "%c%c%c", &num, &c, &c2, &c3);
     if (res < 1)
         return -1LL;
     else if (1 == res)
@@ -1871,9 +2071,9 @@ sg_get_llnum(const char * buf)
                 return num * 1099511627776LL * 1024;
             return -1LL;
         case 'X':
-            cp = (char *)strchr(buf, 'x');
+            cp = (char *)strchr(b, 'x');
             if (NULL == cp)
-                cp = (char *)strchr(buf, 'X');
+                cp = (char *)strchr(b, 'X');
             if (cp) {
                 ll = sg_get_llnum(cp + 1);
                 if (-1LL != ll)
@@ -1890,9 +2090,9 @@ sg_get_llnum(const char * buf)
 }
 
 /* Extract character sequence from ATA words as in the model string
-   in a IDENTIFY DEVICE response. Returns number of characters
-   written to 'ochars' before 0 character is found or 'num' words
-   are processed. */
+ * in a IDENTIFY DEVICE response. Returns number of characters
+ * written to 'ochars' before 0 character is found or 'num' words
+ * are processed. */
 int
 sg_ata_get_chars(const unsigned short * word_arr, int start_word,
                  int num_words, int is_big_endian, char * ochars)

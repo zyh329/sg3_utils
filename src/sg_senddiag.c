@@ -1,5 +1,5 @@
 /* A utility program originally written for the Linux OS SCSI subsystem
-*  Copyright (C) 2003-2013 D. Gilbert
+*  Copyright (C) 2003-2014 D. Gilbert
 *  This program is free software; you can redistribute it and/or modify
 *  it under the terms of the GNU General Public License as published by
 *  the Free Software Foundation; either version 2, or (at your option)
@@ -24,7 +24,7 @@
 #include "sg_cmds_basic.h"
 #include "sg_cmds_extra.h"
 
-static const char * version_str = "0.38 20130507";
+static const char * version_str = "0.41 20140517";
 
 #define ME "sg_senddiag: "
 
@@ -369,21 +369,12 @@ static int do_modes_0a(int sg_fd, void * resp, int mx_resp_len, int noisy,
     else
         res = sg_ll_mode_sense10(sg_fd, 0 /* llbaa */, 1 /* dbd */, 0, 0xa, 0,
                                  resp, mx_resp_len, noisy, verbose);
-    if (SG_LIB_CAT_INVALID_OP == res)
-        fprintf(stderr, "Mode sense (%s) command not supported\n",
-                (mode6 ? "6" : "10"));
-    else if (SG_LIB_CAT_ILLEGAL_REQ == res)
-        fprintf(stderr, "bad field in Mode sense (%s) command\n",
-                (mode6 ? "6" : "10"));
-    else if (SG_LIB_CAT_NOT_READY == res)
-        fprintf(stderr, "Mode sense (%s) failed, device not ready\n",
-                (mode6 ? "6" : "10"));
-    else if (SG_LIB_CAT_UNIT_ATTENTION == res)
-        fprintf(stderr, "Mode sense (%s) failed, unit attention\n",
-                (mode6 ? "6" : "10"));
-    else if (SG_LIB_CAT_ABORTED_COMMAND == res)
-        fprintf(stderr, "Mode sense (%s) failed, aborted command\n",
-                (mode6 ? "6" : "10"));
+    if (res) {
+        char b[80];
+
+        sg_get_category_sense_str(res, sizeof(b), b, verbose);
+        fprintf(stderr, "Mode sense (%s): %s\n", (mode6 ? "6" : "10"), b);
+    }
     return res;
 }
 
@@ -408,8 +399,11 @@ static int build_diag_page(const char * inp, unsigned char * mp_arr,
         *mp_arr_len = 0;
     if ('-' == inp[0]) {        /* read from stdin */
         char line[512];
+        char carry_over[4];
         int off = 0;
+        int split_line;
 
+        carry_over[0] = 0;
         for (j = 0; j < 512; ++j) {
             if (NULL == fgets(line, sizeof(line), stdin))
                 break;
@@ -418,11 +412,32 @@ static int build_diag_page(const char * inp, unsigned char * mp_arr,
                 if ('\n' == line[in_len - 1]) {
                     --in_len;
                     line[in_len] = '\0';
-                }
+                    split_line = 0;
+                } else
+                    split_line = 1;
             }
-            if (0 == in_len)
+            if (in_len < 1) {
+                carry_over[0] = 0;
                 continue;
-            lcp = line;
+            }
+            if (carry_over[0]) {
+                if (isxdigit(line[0])) {
+                    carry_over[1] = line[0];
+                    carry_over[2] = '\0';
+                    if (1 == sscanf(carry_over, "%x", &h))
+                        mp_arr[off - 1] = h;       /* back up and overwrite */
+                    else {
+                        fprintf(stderr, "build_diag_page: carry_over error "
+                                "['%s'] around line %d\n", carry_over, j + 1);
+                        return 1;
+                    }
+                    lcp = line + 1;
+                    --in_len;
+                } else
+                    lcp = line;
+                carry_over[0] = 0;
+            } else
+                lcp = line;
             m = strspn(lcp, " \t");
             if (m == in_len)
                 continue;
@@ -443,6 +458,10 @@ static int build_diag_page(const char * inp, unsigned char * mp_arr,
                                 "larger than 0xff in line %d, pos %d\n",
                                 j + 1, (int)(lcp - line + 1));
                         return 1;
+                    }
+                    if (split_line && (1 == strlen(lcp))) {
+                        /* single trailing hex digit might be a split pair */
+                        carry_over[0] = *lcp;
                     }
                     if ((off + k) >= max_arr_len) {
                         fprintf(stderr, "build_diag_page: array length "

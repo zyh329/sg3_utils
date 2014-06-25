@@ -1,5 +1,5 @@
 /* A utility program originally written for the Linux OS SCSI subsystem.
-*  Copyright (C) 2000-2013 D. Gilbert
+*  Copyright (C) 2000-2014 D. Gilbert
 *  This program is free software; you can redistribute it and/or modify
 *  it under the terms of the GNU General Public License as published by
 *  the Free Software Foundation; either version 2, or (at your option)
@@ -30,7 +30,7 @@ const char * sg_ansi_version_arr[] =
     "SPC-2",
     "SPC-3",
     "SPC-4",
-    "reserved [7h]",
+    "SPC-5",
     "ecma=1, [8h]",
     "ecma=1, [9h]",
     "ecma=1, [Ah]",
@@ -49,7 +49,8 @@ struct sg_version_descriptor {
 };
 
 /* table from SPC-4 revision 36 [sorted numerically (from Annex E.9)] */
-/* Can also be obtained from : http://www.t10.org/lists/stds.txt 20130321 */
+/* Can also be obtained from : http://www.t10.org/lists/stds.txt 20140517 */
+
 
 #ifdef SG_SCSI_STRINGS
 struct sg_version_descriptor sg_version_descriptor_arr[] = {
@@ -188,6 +189,7 @@ struct sg_version_descriptor sg_version_descriptor_arr[] = {
     {0x462, "SPC-4 T10/BSR INCITS 513 revision 18"},
     {0x463, "SPC-4 T10/BSR INCITS 513 revision 23"},
     {0x466, "SPC-4 T10/BSR INCITS 513 revision 36"},
+    {0x468, "SPC-4 T10/BSR INCITS 513 revision 37"},
     {0x480, "SMC-3 (no version claimed)"},
     {0x482, "SMC-3 T10/1730-D revision 15"},
     {0x482, "SMC-3 T10/1730-D revision 16"},
@@ -198,6 +200,7 @@ struct sg_version_descriptor sg_version_descriptor_arr[] = {
     {0x4ac, "ADC-2 ANSI INCITS 441-2008"},
     {0x4c0, "SBC-3 (no version claimed)"},
     {0x4c3, "SBC-3 T10/BSR INCITS 514 revision 35"},
+    {0x4c5, "SBC-3 T10/BSR INCITS 514 revision 36"},
     {0x4e0, "MMC-6 (no version claimed)"},
     {0x4e3, "MMC-6 T10/1836-D revision 2b"},
     {0x4e5, "MMC-6 T10/1836-D revision 02g"},
@@ -211,12 +214,15 @@ struct sg_version_descriptor sg_version_descriptor_arr[] = {
     {0x50a, "ADC-3 ANSI INCITS 497-2012"},
     {0x520, "SSC-4 (no version claimed)"},
     {0x523, "SSC-4 T10/BSR INCITS 516 revision 2"},
+    {0x525, "SSC-4 T10/BSR INCITS 516 revision 3"},
+    {0x527, "SSC-4 SSC-4 ANSI INCITS 516-2013"},
     {0x560, "OSD-3 (no version claimed)"},
     {0x580, "SES-3 (no version claimed)"},
     {0x5a0, "SSC-5 (no version claimed)"},
     {0x5c0, "SPC-5 (no version claimed)"},
     {0x5e0, "SFSC (no version claimed)"},
     {0x600, "SBC-4 (no version claimed)"},
+    {0x620, "ZBC (no version claimed)"},
     {0x820, "SSA-TL2 (no version claimed)"},
     {0x83b, "SSA-TL2 T10/1147-D revision 05b"},
     {0x83c, "SSA-TL2 ANSI INCITS 308-1998"},
@@ -251,6 +257,9 @@ struct sg_version_descriptor sg_version_descriptor_arr[] = {
     {0x955, "SRP T10/1415-D revision 16a"},
     {0x95c, "SRP ANSI INCITS 365-2002"},
     {0x960, "iSCSI (no version claimed)"},
+    {0x961, "iSCSI RFC 7143"},
+    {0x962, "iSCSI RFC 7144"},
+    /* 0x960 up to 0x97f for iSCSI use */
     {0x980, "SBP-3 (no version claimed)"},
     {0x982, "SBP-3 T10/1467-D revision 1f"},
     {0x994, "SBP-3 T10/1467-D revision 3"},
@@ -330,8 +339,12 @@ struct sg_version_descriptor sg_version_descriptor_arr[] = {
     {0xc4a, "SAS-2.1 T10/2125-D revision 06"},
     {0xc4b, "SAS-2.1 T10/2125-D revision 07"},
     {0xc4e, "SAS-2.1 ANSI INCITS 478-2011"},
+    {0xc4f, "SAS-2.1 ANSI INCITS 478-2011 w/ Amnd 1 ANSI INCITS "
+            "478/AM1-2014"},
     {0xc60, "SAS-3 (no version claimed)"},
     {0xc63, "SAS-3 T10/BSR INCITS 519 revision 05a"},
+    {0xc65, "SAS-3 T10/BSR INCITS 519 revision 06"},
+    {0xc80, "SAS-4 (no version claimed)"},
     {0xd20, "FC-PH (no version claimed)"},
     {0xd3b, "FC-PH ANSI INCITS 230-1994"},
     {0xd3c, "FC-PH ANSI INCITS 230-1994 with Amnd 1 ANSI INCITS "
@@ -470,14 +483,21 @@ struct sg_version_descriptor sg_version_descriptor_arr[] = {
     {0x20a5, "SPL T10/2124-D revision 7"},
     {0x20a7, "SPL ANSI INCITS 476-2011"},
     {0x20a8, "SPL ANSI INCITS 476-2011 + SPL AM1 INCITS 476/AM1 2012"},
+    {0x20aa, "SPL ISO/IEC 14776-261:2012"},
     {0x20c0, "SPL-2 (no version claimed)"},
     {0x20c2, "SPL-2 T10/BSR INCITS 505 revision 4"},
     {0x20c4, "SPL-2 T10/BSR INCITS 505 revision 5"},
+    {0x20c8, "SPL-2 ANSI INCITS 505-2013"},
     {0x20e0, "SPL-3 (no version claimed)"},
+    {0x20e4, "SPL-3 T10/BSR INCITS 492 revision 6"},
+    {0x20e6, "SPL-3 T10/BSR INCITS 492 revision 7"},
+    {0x2100, "SPL-4 (no version claimed)"},
     {0x21e0, "SOP (no version claimed)"},
     {0x21e4, "SOP T10/BSR INCITS 489 revision 4"},
+    {0x21e6, "SOP T10/BSR INCITS 489 revision 5"},
     {0x2200, "PQI (no version claimed)"},
     {0x2204, "PQI T10/BSR INCITS 490 revision 6"},
+    {0x2206, "PQI T10/BSR INCITS 490 revision 7"},
     {0x2220, "SOP-2 (no version claimed)"},
     {0x2240, "PQI-2 (no version claimed)"},
     {0xffc0, "IEEE 1667 (no version claimed)"},

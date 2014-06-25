@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2004-2013 Douglas Gilbert.
+ * Copyright (c) 2004-2014 Douglas Gilbert.
  * All rights reserved.
  * Use of this source code is governed by a BSD-style
  * license that can be found in the BSD_LICENSE file.
@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <getopt.h>
+#include <ctype.h>
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
@@ -24,7 +25,7 @@
  * mode page on the given device.
  */
 
-static const char * version_str = "1.10 20130507";
+static const char * version_str = "1.14 20140518";
 
 #define ME "sg_wr_mode: "
 
@@ -111,8 +112,11 @@ static int build_mode_page(const char * inp, unsigned char * mp_arr,
         *mp_arr_len = 0;
     if ('-' == inp[0]) {        /* read from stdin */
         char line[512];
+        char carry_over[4];
         int off = 0;
+        int split_line;
 
+        carry_over[0] = 0;
         for (j = 0; j < 512; ++j) {
             if (NULL == fgets(line, sizeof(line), stdin))
                 break;
@@ -121,11 +125,32 @@ static int build_mode_page(const char * inp, unsigned char * mp_arr,
                 if ('\n' == line[in_len - 1]) {
                     --in_len;
                     line[in_len] = '\0';
-                }
+                    split_line = 0;
+                } else
+                    split_line = 1;
             }
-            if (0 == in_len)
+            if (in_len < 1) {
+                carry_over[0] = 0;
                 continue;
-            lcp = line;
+            }
+            if (carry_over[0]) {
+                if (isxdigit(line[0])) {
+                    carry_over[1] = line[0];
+                    carry_over[2] = '\0';
+                    if (1 == sscanf(carry_over, "%x", &h))
+                        mp_arr[off - 1] = h;       /* back up and overwrite */
+                    else {
+                        fprintf(stderr, "build_mode_page: carry_over error "
+                                "['%s'] around line %d\n", carry_over, j + 1);
+                        return 1;
+                    }
+                    lcp = line + 1;
+                    --in_len;
+                } else
+                    lcp = line;
+                carry_over[0] = 0;
+            } else
+                lcp = line;
             m = strspn(lcp, " \t");
             if (m == in_len)
                 continue;
@@ -146,6 +171,10 @@ static int build_mode_page(const char * inp, unsigned char * mp_arr,
                                 "larger than 0xff in line %d, pos %d\n",
                                 j + 1, (int)(lcp - line + 1));
                         return 1;
+                    }
+                    if (split_line && (1 == strlen(lcp))) {
+                        /* single trailing hex digit might be a split pair */
+                        carry_over[0] = *lcp;
                     }
                     if ((off + k) >= max_arr_len) {
                         fprintf(stderr, "build_mode_page: array length "
@@ -292,6 +321,7 @@ int main(int argc, char * argv[])
     unsigned char mask_in[MX_ALLOC_LEN];
     unsigned char ref_md[MX_ALLOC_LEN];
     char ebuff[EBUFF_SZ];
+    char b[80];
     struct sg_simple_inquiry_resp inq_data;
     int ret = 0;
 
@@ -430,28 +460,14 @@ int main(int argc, char * argv[])
                                  pg_code, sub_pg_code, ref_md, alloc_len, 1,
                                  verbose);
     ret = res;
-    if (SG_LIB_CAT_INVALID_OP == res) {
-        fprintf(stderr, "MODE SENSE (%d) not supported, try '--len=%d'\n",
-                (mode_6 ? 6 : 10), (mode_6 ? 10 : 6));
-        goto err_out;
-    } else if (SG_LIB_CAT_NOT_READY == res) {
-        fprintf(stderr, "MODE SENSE (%d) failed, device not ready\n",
-                (mode_6 ? 6 : 10));
-        goto err_out;
-    } else if (SG_LIB_CAT_UNIT_ATTENTION == res) {
-        fprintf(stderr, "MODE SENSE (%d) failed, unit attention\n",
-                (mode_6 ? 6 : 10));
-        goto err_out;
-    } else if (SG_LIB_CAT_ABORTED_COMMAND == res) {
-        fprintf(stderr, "MODE SENSE (%d) failed, aborted command\n",
-                (mode_6 ? 6 : 10));
-        goto err_out;
-    } else if (SG_LIB_CAT_ILLEGAL_REQ == res) {
-        fprintf(stderr, "bad field in MODE SENSE (%d) command\n",
-                (mode_6 ? 6 : 10));
-        goto err_out;
-    } else if (0 != res) {
-        fprintf(stderr, "MODE SENSE (%d) failed\n", (mode_6 ? 6 : 10));
+    if (res) {
+        if (SG_LIB_CAT_INVALID_OP == res)
+            fprintf(stderr, "MODE SENSE (%d) not supported, try '--len=%d'\n",
+                    (mode_6 ? 6 : 10), (mode_6 ? 10 : 6));
+        else {
+            sg_get_category_sense_str(res, sizeof(b), b, verbose);
+            fprintf(stderr, "MODE SENSE (%d): %s\n", (mode_6 ? 6 : 10), b);
+        }
         goto err_out;
     }
     off = sg_mode_page_offset(ref_md, alloc_len, mode_6, ebuff, EBUFF_SZ);
@@ -526,34 +542,15 @@ int main(int argc, char * argv[])
 
         memcpy(ref_md + off, read_in, read_in_len);
         if (mode_6)
-            res = sg_ll_mode_select6(sg_fd, 1, save, ref_md, md_len, 1,
-                                     verbose);
+            res = sg_ll_mode_select6(sg_fd, 1 /* PF */, save, ref_md, md_len,
+                                     1, verbose);
         else
-            res = sg_ll_mode_select10(sg_fd, 1, save, ref_md, md_len, 1,
-                                      verbose);
+            res = sg_ll_mode_select10(sg_fd, 1 /* PF */, save, ref_md,
+                                      md_len, 1, verbose);
         ret = res;
-        if (SG_LIB_CAT_INVALID_OP == res) {
-            fprintf(stderr, "MODE SELECT (%d) not supported\n",
-                    (mode_6 ? 6 : 10));
-            goto err_out;
-        } else if (SG_LIB_CAT_NOT_READY == res) {
-            fprintf(stderr, "MODE SELECT (%d) failed, device not ready\n",
-                    (mode_6 ? 6 : 10));
-            goto err_out;
-        } else if (SG_LIB_CAT_UNIT_ATTENTION == res) {
-            fprintf(stderr, "MODE SELECT (%d) failed, unit attention\n",
-                    (mode_6 ? 6 : 10));
-            goto err_out;
-        } else if (SG_LIB_CAT_ABORTED_COMMAND == res) {
-            fprintf(stderr, "MODE SELECT (%d) failed, aborted command\n",
-                    (mode_6 ? 6 : 10));
-            goto err_out;
-        } else if (SG_LIB_CAT_ILLEGAL_REQ == res) {
-            fprintf(stderr, "bad field in MODE SELECT (%d) command\n",
-                    (mode_6 ? 6 : 10));
-            goto err_out;
-        } else if (0 != res) {
-            fprintf(stderr, "MODE SELECT (%d) failed\n", (mode_6 ? 6 : 10));
+        if (res) {
+            sg_get_category_sense_str(res, sizeof(b), b, verbose);
+            fprintf(stderr, "MODE SELECT (%d): %s\n", (mode_6 ? 6 : 10), b);
             goto err_out;
         }
     } else {

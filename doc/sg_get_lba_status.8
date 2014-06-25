@@ -1,11 +1,11 @@
-.TH SG_GET_LBA_STATUS "8" "November 2012" "sg3_utils\-1.35" SG3_UTILS
+.TH SG_GET_LBA_STATUS "8" "May 2014" "sg3_utils\-1.39" SG3_UTILS
 .SH NAME
 sg_get_lba_status \- send SCSI GET LBA STATUS command
 .SH SYNOPSIS
 .B sg_get_lba_status
 [\fI\-\-brief\fR] [\fI\-\-help\fR] [\fI\-\-hex\fR] [\fI\-\-lba=LBA\fR]
-[\fI\-\-maxlen=LEN\fR] [\fI\-\-raw\fR] [\fI\-\-verbose\fR]
-[\fI\-\-version\fR] \fIDEVICE\fR
+[\fI\-\-maxlen=LEN\fR] [\fI\-\-raw\fR] [\fI\-\-readonly\fR]
+[\fI\-\-verbose\fR] [\fI\-\-version\fR] \fIDEVICE\fR
 .SH DESCRIPTION
 .\" Add any additional description here
 .PP
@@ -27,11 +27,11 @@ Arguments to long options are mandatory for short options as well.
 when use once then one LBA status descriptor per line is output to stdout.
 Each line has this
 format: "0x<descriptor_LBA>  0x<blocks> <provisioning_status>". So the
-descriptor LBA and blocks are output in hex and the provisioning status
-in decimal. When used twice (e.g. '\-bb' or '\-\-brief \-\-brief') the
-the provisioning status of the given \fILBA\fR (or LBA 0 if the
-\fI\-\-lba\fR option is not given) is output to stdout. A check is made
-that the given \fILBA\fR lies on the range of the first returned LBA
+descriptor's starting LBA and number of blocks are output in hex and the
+provisioning status in decimal. When used twice (e.g. '\-bb' or '\-\-brief
+\-\-brief') then the provisioning status of the given \fILBA\fR (or LBA 0
+if the \fI\-\-lba\fR option is not given) is output to stdout. A check is
+made that the given \fILBA\fR lies in the range of the first returned LBA
 status descriptor (as it should according to SBC\-3 revision 20) and
 warnings are sent to stderr if it doesn't.
 .TP
@@ -55,6 +55,10 @@ enough space for the response header and one LBA status descriptor.
 \fB\-r\fR, \fB\-\-raw\fR
 output response in binary (to stdout).
 .TP
+\fB\-R\fR, \fB\-\-readonly\fR
+open the \fIDEVICE\fR read\-only (e.g. in Unix with the O_RDONLY flag).
+The default is to open it read\-write.
+.TP
 \fB\-v\fR, \fB\-\-verbose\fR
 increase the level of verbosity, (i.e. debug output). Additional output
 caused by this option is sent to stderr.
@@ -76,7 +80,7 @@ Written by Douglas Gilbert.
 .SH "REPORTING BUGS"
 Report bugs to <dgilbert at interlog dot com>.
 .SH COPYRIGHT
-Copyright \(co 2009\-2012 Douglas Gilbert
+Copyright \(co 2009\-2014 Douglas Gilbert
 .br
 This software is distributed under a FreeBSD license. There is NO
 warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.

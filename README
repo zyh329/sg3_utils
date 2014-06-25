@@ -158,7 +158,7 @@ It assumes a level of C99 compliance and favours POSIX system and library
 calls over OS specific calls.
 
 The C code is written in a C++ friendly way and is checked from time to
-time that it compiles clean with C++. To accomodate C++ certain C99
+time that it compiles clean with C++. To accommodate C++ certain C99
 constructs such as designated initializers cannot be used.
 
 Building
@@ -187,7 +187,9 @@ systems. The 'sg3_utils.spec' file in the main directory can be used like
 this: 'rpmbuild -ba sg3_utils.spec' in a rpmbuild tree SPECS directory.
 To cross build or make a more widely distributable package then the --target
 option may be useful: 'rpmbuild --target=i386 -ba sg3_utils.spec' or
-'rpmbuild --target=x86_64 -ba sg3_utils.spec' .
+'rpmbuild --target=x86_64 -ba sg3_utils.spec' . The sg3_utils.spec file
+in the main directory targets Red Hat systems, an alternative "spec" file
+for Suse systems has been placed under the 'suse' directory.
 
 The 'build_debian.sh' script should build several "deb" packages and place
 them in the parent directory. In debian based systems doing
@@ -261,8 +263,8 @@ subdirectory:
   - bsg_queue_tst, sg_excl, scsi_inquiry, sg_iovec_tst, sg_queue_tst,
     sg_sat_chk_power, sg__sat_identify, sg__sat_phy_event,
     sg__sat_set_features, sg_sat_smart_rd_data, sg_simple1, sg_simple2,
-    sg_simple3, sg_simple4, sg_simple5, sg_simple16, sg_tst_excl and
-    sg_tst_excl2
+    sg_simple3, sg_simple4, sg_simple5, sg_simple16, sg_tst_excl,
+    sg_tst_excl2 and sg_tst_excl3
 
 Also in that subdirectory is a script to test sg_persist, an example data
 file for sg_persist (called "transport_ids.txt") and an example data file for
@@ -333,7 +335,12 @@ time. While holding O_EXCL control a thread attempts a double increment
 on an integer in the given LBA. If the integer starts even (after the
 first read) then it should remain even if the O_EXCL flag is doing its job.
 The "sg_tst_excl" variant uses the Linux SG_IO v3 interface while the
-"sg_tst_excl2" uses the more generic sg_pt infrastructure. 
+"sg_tst_excl2" uses the more generic sg_pt infrastructure.
+
+"sg_tst_excl3" is a variant of "sg_tst_excl2". "sg_tst_excl3" only does
+the double increment from the first thread, each time using O_EXCL on
+open. The remaining threads check the value is even, each time doing
+an open without the O_EXCL flag.
 
 "bsg_queue_tst" sends an INQUIRY command via the Linux SG_IO v4 interface
 which is used by the bsg driver. So it will take device names like
@@ -396,4 +403,4 @@ See http://sg.danny.cz/sg/tools.html
 
 
 Douglas Gilbert
-14th October 2013
+12th June 2014
