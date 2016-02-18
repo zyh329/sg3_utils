@@ -2,7 +2,7 @@
 #define SG_LIB_H
 
 /*
- * Copyright (c) 2004-2014 Douglas Gilbert.
+ * Copyright (c) 2004-2016 Douglas Gilbert.
  * All rights reserved.
  * Use of this source code is governed by a BSD-style
  * license that can be found in the BSD_LICENSE file.
@@ -105,6 +105,7 @@ extern "C" {
 #define TPROTO_ATA 8
 #define TPROTO_UAS 9            /* USB attached SCSI */
 #define TPROTO_SOP 0xa          /* SCSI over PCIe */
+#define TPROTO_PCIE 0xb         /* includes NVMe */
 #define TPROTO_NONE 0xf
 
 
@@ -202,28 +203,74 @@ int sg_get_sense_progress_fld(const unsigned char * sensep, int sb_len,
 
 /* Closely related to sg_print_sense(). Puts decoded sense data in 'buff'.
  * Usually multiline with multiple '\n' including one trailing. If
- * 'raw_sinfo' set appends sense buffer in hex. */
-void sg_get_sense_str(const char * leadin, const unsigned char * sense_buffer,
-                      int sb_len, int raw_sinfo, int buff_len, char * buff);
+ * 'raw_sinfo' set appends sense buffer in hex. 'leadin' is string prepended
+ * to each line written to 'buff', NULL treated as "". Returns the number of
+ * bytes written to 'buff' excluding the trailing '\0'.
+ * N.B. prior to sg3_utils v 1.42 'leadin' was only prepended to the first
+ * line output. Also this function returned type void. */
+int sg_get_sense_str(const char * leadin, const unsigned char * sense_buffer,
+                     int sb_len, int raw_sinfo, int buff_len, char * buff);
+
+/* Decode descriptor format sense descriptors (assumes sense buffer is
+ * in descriptor format). 'leadin' is string prepended to each line written
+ * to 'b', NULL treated as "". Returns the number of bytes written to 'b'
+ * excluding the trailing '\0'. */
+int sg_get_sense_descriptors_str(const char * leadin,
+                                 const unsigned char * sense_buffer,
+                                 int sb_len, int blen, char * b);
+
+/* Decodes a designation descriptor (e.g. as found in the Device
+ * Identification VPD page (0x83)) into string 'b' whose maximum length is
+ * blen. 'leadin' is string prepended to each line written to 'b', NULL
+ * treated as "". Returns the number of bytes written to 'b' excluding the
+ * trailing '\0'. */
+int sg_get_designation_descriptor_str(const char * leadin,
+                                      const unsigned char * ddp, int dd_len,
+                                      int print_assoc, int do_long, int blen,
+                                      char * b);
 
 /* Yield string associated with peripheral device type (pdt). Returns
  * 'buff'. If 'pdt' out of range yields "bad pdt" string. */
 char * sg_get_pdt_str(int pdt, int buff_len, char * buff);
 
+/* Some lesser used PDTs share a lot in common with a more used PDT.
+ * Examples are PDT_ADC decaying to PDT_TAPE and PDT_ZBC to PDT_DISK.
+ * If such a lesser used 'pdt' is given to this function, then it will
+ * return the more used PDT (i.e. "decays to"); otherwise 'pdt' is returned.
+ * Valid for 'pdt' 0 to 31, for other values returns 'pdt'. */
+int sg_lib_pdt_decay(int pdt);
+
 /* Yield string associated with transport protocol identifier (tpi). Returns
  *    'buff'. If 'tpi' out of range yields "bad tpi" string. */
 char * sg_get_trans_proto_str(int tpi, int buff_len, char * buff);
+
+/* Returns a designator's type string given 'val' (0 to 15 inclusive),
+ * otherwise returns NULL. */
+const char * sg_get_desig_type_str(int val);
+
+/* Returns a designator's code_set string given 'val' (0 to 15 inclusive),
+ * otherwise returns NULL. */
+const char * sg_get_desig_code_set_str(int val);
+
+/* Returns a designator's association string given 'val' (0 to 3 inclusive),
+ * otherwise returns NULL. */
+const char * sg_get_desig_assoc_str(int val);
 
 extern FILE * sg_warnings_strm;
 
 void sg_set_warnings_strm(FILE * warnings_strm);
 
 /* The following "print" functions send ACSII to 'sg_warnings_strm' file
- * descriptor (default value is stderr) */
+ * descriptor (default value is stderr). 'leadin' is string prepended to
+ * each line printed out, NULL treated as "". */
 void sg_print_command(const unsigned char * command);
+void sg_print_scsi_status(int scsi_status);
+
+/* 'leadin' is string prepended to each line printed out, NULL treated as
+ * "". N.B. prior to sg3_utils v 1.42 'leadin' was only prepended to the
+ * first line printed. */
 void sg_print_sense(const char * leadin, const unsigned char * sense_buffer,
                     int sb_len, int raw_info);
-void sg_print_scsi_status(int scsi_status);
 
 /* Utilities can use these exit status values for syntax errors and
  * file (device node) problems (e.g. not found or permissions). */
@@ -262,6 +309,12 @@ void sg_print_scsi_status(int scsi_status);
                                 /* 24: this is a SCSI status, not sense. */
                                 /* It indicates reservation by another */
                                 /* machine blocks this command */
+#define SG_LIB_CAT_CONDITION_MET 25 /* SCSI status, not sense key. */
+                                    /* Only from PRE-FETCH (SBC-4) */
+#define SG_LIB_CAT_BUSY       26 /* SCSI status, not sense. Invites retry */
+#define SG_LIB_CAT_TS_FULL    27 /* SCSI status, not sense. Wait then retry */
+#define SG_LIB_CAT_ACA_ACTIVE 28 /* SCSI status; ACA seldom used */
+#define SG_LIB_CAT_TASK_ABORTED 29 /* SCSI status, this command aborted by? */
 #define SG_LIB_CAT_PROTECTION 40 /* subset of aborted command (for PI, DIF) */
                                 /*       [sk,asc,ascq: 0xb,0x10,*] */
 #define SG_LIB_CAT_MALFORMED 97 /* Response to SCSI command malformed */
@@ -333,9 +386,10 @@ void dStrHexErr(const char* str, int len, int no_ascii);
  * separated) to 'b' not to exceed 'b_len' characters. Each line
  * starts with 'leadin' (NULL for no leadin) and there are 16 bytes
  * per line with an extra space between the 8th and 9th bytes. 'format'
- * is unused, set to 0 . */
-void dStrHexStr(const char* str, int len, const char * leadin, int format,
-                int b_len, char * b);
+ * is unused, set to 0 . Returns number of bytes written to 'b' excluding
+ * the trailing '\0'.*/
+int dStrHexStr(const char* str, int len, const char * leadin, int format,
+               int b_len, char * b);
 
 /* Returns 1 when executed on big endian machine; else returns 0.
  * Useful for displaying ATA identify words (which need swapping on a

@@ -1,7 +1,7 @@
 /* A utility program for copying files. Similar to 'dd' but using
  * the 'Extended Copy' command.
  *
- *  Copyright (c) 2011-2014 Hannes Reinecke, SUSE Labs
+ *  Copyright (c) 2011-2016 Hannes Reinecke, SUSE Labs
  *
  *  Largely taken from 'sg_dd', which has the
  *
@@ -30,14 +30,13 @@
 
 #define _XOPEN_SOURCE 600
 #ifndef _GNU_SOURCE
-#define _GNU_SOURCE     /* resolves u_char typedef in scsi/scsi.h [lk 2.4] */
+#define _GNU_SOURCE 1
 #endif
 
 #include <unistd.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdarg.h>
 #include <string.h>
 #include <signal.h>
 #include <ctype.h>
@@ -61,8 +60,10 @@
 #include "sg_cmds_basic.h"
 #include "sg_cmds_extra.h"
 #include "sg_io_linux.h"
+#include "sg_unaligned.h"
+#include "sg_pr2serr.h"
 
-static const char * version_str = "0.45 20140516";
+static const char * version_str = "0.53 20160201";
 
 #define ME "sg_xcopy: "
 
@@ -165,8 +166,8 @@ static int blk_sz = 0;
 static int priority = 1;
 static int list_id_usage = -1;
 
-static char xcopy_flag_cat = 0;
-static char xcopy_flag_dc = 0;
+static int xcopy_flag_cat = 0;
+static int xcopy_flag_dc = 0;
 
 struct xcopy_fp_t {
     char fname[INOUTF_SZ];
@@ -193,25 +194,7 @@ static const char * rec_copy_op_params_str = "Receive copy operating "
                                              "parameters";
 
 static void calc_duration_throughput(int contin);
-#ifdef __GNUC__
-static int pr2serr(const char * fmt, ...)
-        __attribute__ ((format (printf, 1, 2)));
-#else
-static int pr2serr(const char * fmt, ...);
-#endif
 
-
-static int
-pr2serr(const char * fmt, ...)
-{
-    va_list args;
-    int n;
-
-    va_start(args, fmt);
-    n = vfprintf(stderr, fmt, args);
-    va_end(args);
-    return n;
-}
 
 static void
 install_handler(int sig_num, void (*sig_handler) (int sig))
@@ -227,7 +210,6 @@ install_handler(int sig_num, void (*sig_handler) (int sig))
     }
 }
 
-
 static void
 print_stats(const char * str)
 {
@@ -238,7 +220,6 @@ print_stats(const char * str)
     pr2serr("%s%" PRId64 "+%d records out\n", str, out_full - out_partial,
             out_partial);
 }
-
 
 static void
 interrupt_handler(int sig)
@@ -255,7 +236,6 @@ interrupt_handler(int sig)
     print_stats("");
     kill(getpid (), sig);
 }
-
 
 static void
 siginfo_handler(int sig)
@@ -286,12 +266,12 @@ find_bsg_major(void)
         return;
     }
     while ((cp = fgets(b, sizeof(b), fp))) {
-        if ((1 == sscanf(b, "%s", a)) &&
+        if ((1 == sscanf(b, "%126s", a)) &&
             (0 == memcmp(a, "Character", 9)))
             break;
     }
     while (cp && (cp = fgets(b, sizeof(b), fp))) {
-        if (2 == sscanf(b, "%d %s", &n, a)) {
+        if (2 == sscanf(b, "%d %126s", &n, a)) {
             if (0 == strcmp("bsg", a)) {
                 bsg_major = n;
                 break;
@@ -329,7 +309,8 @@ open_sg(struct xcopy_fp_t * fp, int verbose)
         snprintf(ebuff, EBUFF_SZ, "/sys/dev/block/%d:%d/partition",
                  devmajor, devminor);
         if ((fd = open(ebuff, O_RDONLY)) >= 0) {
-            len = read(fd, ebuff, EBUFF_SZ);
+            ebuff[EBUFF_SZ - 1] = '\0';
+            len = read(fd, ebuff, EBUFF_SZ - 1);
             if (len < 0) {
                 perror("read partition");
             } else {
@@ -603,28 +584,11 @@ scsi_encode_seg_desc(unsigned char *seg_desc, int seg_desc_type,
         seg_desc[4] = 0;
         seg_desc[5] = 0; /* Source target index */
         seg_desc[7] = 1; /* Destination target index */
-        seg_desc[10] = (num_blk >> 8) & 0xff;
-        seg_desc[11] = num_blk & 0xff;
-        seg_desc[12] = (src_lba >> 56) & 0xff;
-        seg_desc[13] = (src_lba >> 48) & 0xff;
-        seg_desc[14] = (src_lba >> 40) & 0xff;
-        seg_desc[15] = (src_lba >> 32) & 0xff;
-        seg_desc[16] = (src_lba >> 24) & 0xff;
-        seg_desc[17] = (src_lba >> 16) & 0xff;
-        seg_desc[18] = (src_lba >> 8) & 0xff;
-        seg_desc[19] = src_lba & 0xff;
-        seg_desc[20] = (dst_lba >> 56) & 0xff;
-        seg_desc[21] = (dst_lba >> 48) & 0xff;
-        seg_desc[22] = (dst_lba >> 40) & 0xff;
-        seg_desc[23] = (dst_lba >> 32) & 0xff;
-        seg_desc[24] = (dst_lba >> 24) & 0xff;
-        seg_desc[25] = (dst_lba >> 16) & 0xff;
-        seg_desc[26] = (dst_lba >> 8) & 0xff;
-        seg_desc[27] = dst_lba & 0xff;
+        sg_put_unaligned_be16(num_blk, seg_desc + 10);
+        sg_put_unaligned_be64(src_lba, seg_desc + 12);
+        sg_put_unaligned_be64(dst_lba, seg_desc + 20);
     }
-    seg_desc[2] = (seg_desc_len >> 8) & 0xFF;
-    seg_desc[3] = seg_desc_len & 0xFF;
-
+    sg_put_unaligned_be16(seg_desc_len, seg_desc + 2);
     return seg_desc_len + 4;
 }
 
@@ -671,7 +635,7 @@ scsi_extended_copy(int sg_fd, unsigned char list_id,
 static int
 scsi_read_capacity(struct xcopy_fp_t *xfp)
 {
-    int k, res;
+    int res;
     unsigned int ui;
     unsigned char rcBuff[RCAP16_REPLY_LEN];
     int verb;
@@ -688,7 +652,7 @@ scsi_read_capacity(struct xcopy_fp_t *xfp)
 
     if ((0xff == rcBuff[0]) && (0xff == rcBuff[1]) && (0xff == rcBuff[2]) &&
         (0xff == rcBuff[3])) {
-        int64_t ls;
+        uint64_t ls;
 
         res = sg_ll_readcap_16(xfp->sg_fd, 0, 0, rcBuff,
                                RCAP16_REPLY_LEN, 1, verb);
@@ -697,20 +661,14 @@ scsi_read_capacity(struct xcopy_fp_t *xfp)
             pr2serr("Read capacity(16): %s\n", b);
             return res;
         }
-        for (k = 0, ls = 0; k < 8; ++k) {
-            ls <<= 8;
-            ls |= rcBuff[k];
-        }
-        xfp->num_sect = ls + 1;
-        xfp->sect_sz = (rcBuff[8] << 24) | (rcBuff[9] << 16) |
-                       (rcBuff[10] << 8) | rcBuff[11];
+        ls = sg_get_unaligned_be64(rcBuff + 0);
+        xfp->num_sect = (int64_t)(ls + 1);
+        xfp->sect_sz = sg_get_unaligned_be32(rcBuff + 8);
     } else {
-        ui = ((rcBuff[0] << 24) | (rcBuff[1] << 16) | (rcBuff[2] << 8) |
-              rcBuff[3]);
+        ui = sg_get_unaligned_be32(rcBuff + 0);
         /* take care not to sign extend values > 0x7fffffff */
         xfp->num_sect = (int64_t)ui + 1;
-        xfp->sect_sz = (rcBuff[4] << 24) | (rcBuff[5] << 16) |
-                       (rcBuff[6] << 8) | rcBuff[7];
+        xfp->sect_sz = sg_get_unaligned_be32(rcBuff + 4);
     }
     if (verbose)
         pr2serr("    %s: number of blocks=%" PRId64 " [0x%" PRIx64 "], block "
@@ -724,9 +682,9 @@ scsi_operating_parameter(struct xcopy_fp_t *xfp, int is_target)
 {
     int res, ftype, snlid;
     unsigned char rcBuff[256];
-    unsigned int rcBuffLen = 256, len, n, td_list = 0;
-    unsigned long num, max_target_num, max_segment_num, max_segment_len;
-    unsigned long max_desc_len, max_inline_data, held_data_limit;
+    uint32_t rcBuffLen = 256, len, n, td_list = 0;
+    uint32_t num, max_target_num, max_segment_num, max_segment_len;
+    uint32_t max_desc_len, max_inline_data, held_data_limit;
     int verb, valid = 0;
     char b[80];
 
@@ -746,38 +704,37 @@ scsi_operating_parameter(struct xcopy_fp_t *xfp, int is_target)
         return -res;
     }
 
-    len = ((rcBuff[0] << 24) | (rcBuff[1] << 16) | (rcBuff[2] << 8) |
-           rcBuff[3]) + 4;
+    len = sg_get_unaligned_be32(rcBuff + 0);
     if (len > rcBuffLen) {
-        pr2serr("  <<report too long for internal buffer, output "
-                "truncated\n");
+        pr2serr("  <<report len %d > %d too long for internal buffer, output "
+                "truncated\n", len, rcBuffLen);
     }
     if (verbose > 2) {
         pr2serr("\nOutput response in hex:\n");
         dStrHexErr((const char *)rcBuff, len, 1);
     }
     snlid = rcBuff[4] & 0x1;
-    max_target_num = rcBuff[8] << 8 | rcBuff[9];
-    max_segment_num = rcBuff[10] << 8 | rcBuff[11];
-    max_desc_len = rcBuff[12] << 24 | rcBuff[13] << 16 | rcBuff[14] << 8 |
-                   rcBuff[15];
-    max_segment_len = rcBuff[16] << 24 | rcBuff[17] << 16 |
-        rcBuff[18] << 8 | rcBuff[19];
+    max_target_num = sg_get_unaligned_be16(rcBuff + 8);
+    max_segment_num = sg_get_unaligned_be16(rcBuff + 10);
+    max_desc_len = sg_get_unaligned_be32(rcBuff + 12);
+    max_segment_len = sg_get_unaligned_be32(rcBuff + 16);
     xfp->max_bytes = max_segment_len ? max_segment_len : ULONG_MAX;
-    max_inline_data = rcBuff[20] << 24 | rcBuff[21] << 16 | rcBuff[22] << 8 |
-                      rcBuff[23];
+    max_inline_data = sg_get_unaligned_be32(rcBuff + 20);
     if (verbose) {
         pr2serr(" >> %s response:\n", rec_copy_op_params_str);
         pr2serr("    Support No List IDentifier (SNLID): %d\n", snlid);
-        pr2serr("    Maximum target descriptor count: %lu\n", max_target_num);
-        pr2serr("    Maximum segment descriptor count: %lu\n",
-                max_segment_num);
-        pr2serr("    Maximum descriptor list length: %lu\n", max_desc_len);
-        pr2serr("    Maximum segment length: %lu\n", max_segment_len);
-        pr2serr("    Maximum inline data length: %lu\n", max_inline_data);
+        pr2serr("    Maximum target descriptor count: %u\n",
+                (unsigned int)max_target_num);
+        pr2serr("    Maximum segment descriptor count: %u\n",
+                (unsigned int)max_segment_num);
+        pr2serr("    Maximum descriptor list length: %u\n",
+                (unsigned int)max_desc_len);
+        pr2serr("    Maximum segment length: %u\n",
+                (unsigned int)max_segment_len);
+        pr2serr("    Maximum inline data length: %u\n",
+                (unsigned int)max_inline_data);
     }
-    held_data_limit = rcBuff[24] << 24 | rcBuff[25] << 16 |
-        rcBuff[26] << 8 | rcBuff[27];
+    held_data_limit = sg_get_unaligned_be32(rcBuff + 24);
     if (list_id_usage < 0) {
         if (!held_data_limit)
             list_id_usage = 2;
@@ -785,15 +742,28 @@ scsi_operating_parameter(struct xcopy_fp_t *xfp, int is_target)
             list_id_usage = 0;
     }
     if (verbose) {
-        pr2serr("    Held data limit: %lu (list_id_usage: %d)\n",
-                held_data_limit, list_id_usage);
-        num = rcBuff[28] << 24 | rcBuff[29] << 16 | rcBuff[30] << 8 |
-              rcBuff[31];
-        pr2serr("    Maximum stream device transfer size: %lu\n", num);
+        pr2serr("    Held data limit: %u (list_id_usage: %d)\n",
+                (unsigned int)held_data_limit, list_id_usage);
+        num = sg_get_unaligned_be32(rcBuff + 28);
+        pr2serr("    Maximum stream device transfer size: %u\n",
+                (unsigned int)num);
         pr2serr("    Maximum concurrent copies: %u\n", rcBuff[36]);
-        pr2serr("    Data segment granularity: %u bytes\n", 1 << rcBuff[37]);
-        pr2serr("    Inline data granularity: %u bytes\n", 1 << rcBuff[38]);
-        pr2serr("    Held data granularity: %u bytes\n", 1 << rcBuff[39]);
+        if (rcBuff[37] > 30)
+            pr2serr("    Data segment granularity: 2**%u bytes\n",
+                    rcBuff[37]);
+        else
+            pr2serr("    Data segment granularity: %u bytes\n",
+                    1 << rcBuff[37]);
+        if (rcBuff[38] > 30)
+            pr2serr("    Inline data granularity: 2**%u bytes\n", rcBuff[38]);
+        else
+            pr2serr("    Inline data granularity: %u bytes\n",
+                    1 << rcBuff[38]);
+        if (rcBuff[39] > 30)
+            pr2serr("    Held data granularity: 2**%u bytes\n",
+                    1 << rcBuff[39]);
+        else
+            pr2serr("    Held data granularity: %u bytes\n", 1 << rcBuff[39]);
 
         pr2serr("    Implemented descriptor list:\n");
     }
@@ -1019,204 +989,11 @@ scsi_operating_parameter(struct xcopy_fp_t *xfp, int is_target)
 static void
 decode_designation_descriptor(const unsigned char * ucp, int i_len)
 {
-    int m, p_id, piv, c_set, assoc, desig_type, d_id, naa;
-    int k;
-    const unsigned char * ip;
-    uint64_t vsei;
-    char b[64];
+    char c[2048];
 
-    ip = ucp + 4;
-    p_id = ((ucp[0] >> 4) & 0xf);
-    c_set = (ucp[0] & 0xf);
-    piv = ((ucp[1] & 0x80) ? 1 : 0);
-    assoc = ((ucp[1] >> 4) & 0x3);
-    desig_type = (ucp[1] & 0xf);
-    pr2serr("    designator type: %d,  code set: %d\n", desig_type, c_set);
-    if (piv && ((1 == assoc) || (2 == assoc)))
-        pr2serr("     transport: %s\n",
-                sg_get_trans_proto_str(p_id, sizeof(b), b));
-
-    switch (desig_type) {
-    case 0: /* vendor specific */
-        k = 0;
-        if ((1 == c_set) || (2 == c_set)) { /* ASCII or UTF-8 */
-            for (k = 0; (k < i_len) && isprint(ip[k]); ++k)
-                ;
-            if (k >= i_len)
-                k = 1;
-        }
-        if (k)
-            pr2serr("      vendor specific: %.*s\n", i_len, ip);
-        else {
-            pr2serr("      vendor specific:\n");
-            dStrHexErr((const char *)ip, i_len, 0);
-        }
-        break;
-    case 1: /* T10 vendor identification */
-        pr2serr("      vendor id: %.8s\n", ip);
-        if (i_len > 8)
-            pr2serr("      vendor specific: %.*s\n", i_len - 8, ip + 8);
-        break;
-    case 2: /* EUI-64 based */
-        if ((8 != i_len) && (12 != i_len) && (16 != i_len)) {
-            pr2serr("      << expect 8, 12 and 16 byte EUI, got %d>>\n",
-                    i_len);
-            dStrHexErr((const char *)ip, i_len, 0);
-            break;
-        }
-        pr2serr("      0x");
-        for (m = 0; m < i_len; ++m)
-            pr2serr("%02x", (unsigned int)ip[m]);
-        pr2serr("\n");
-        break;
-    case 3: /* NAA */
-        if (1 != c_set) {
-            pr2serr("      << unexpected code set %d for NAA>>\n", c_set);
-            dStrHexErr((const char *)ip, i_len, 0);
-            break;
-        }
-        naa = (ip[0] >> 4) & 0xff;
-        if (! ((2 == naa) || (5 == naa) || (6 == naa))) {
-            pr2serr("      << unexpected NAA [0x%x]>>\n", naa);
-            dStrHexErr((const char *)ip, i_len, 0);
-            break;
-        }
-        if ((5 == naa) && (0x10 == i_len)) {
-            if (verbose > 2)
-                pr2serr("      << unexpected NAA 5 len 16, assuming NAA 6 "
-                        ">>\n");
-            naa = 6;
-        }
-        if (2 == naa) {
-            if (8 != i_len) {
-                pr2serr("      << unexpected NAA 2 identifier length: "
-                        "0x%x>>\n", i_len);
-                dStrHexErr((const char *)ip, i_len, 0);
-                break;
-            }
-            d_id = (((ip[0] & 0xf) << 8) | ip[1]);
-            /* c_id = ((ip[2] << 16) | (ip[3] << 8) | ip[4]); */
-            /* vsi = ((ip[5] << 16) | (ip[6] << 8) | ip[7]); */
-            pr2serr("      0x");
-            for (m = 0; m < 8; ++m)
-                pr2serr("%02x", (unsigned int)ip[m]);
-            pr2serr("\n");
-        } else if (5 == naa) {
-            if (8 != i_len) {
-                pr2serr("      << unexpected NAA 5 identifier length: "
-                        "0x%x>>\n", i_len);
-                dStrHexErr((const char *)ip, i_len, 0);
-                break;
-            }
-            /* c_id = (((ip[0] & 0xf) << 20) | (ip[1] << 12) | */
-                    /* (ip[2] << 4) | ((ip[3] & 0xf0) >> 4)); */
-            vsei = ip[3] & 0xf;
-            for (m = 1; m < 5; ++m) {
-                vsei <<= 8;
-                vsei |= ip[3 + m];
-            }
-            pr2serr("      0x");
-            for (m = 0; m < 8; ++m)
-                pr2serr("%02x", (unsigned int)ip[m]);
-            pr2serr("\n");
-        } else if (6 == naa) {
-            if (16 != i_len) {
-                pr2serr("      << unexpected NAA 6 identifier length: "
-                        "0x%x>>\n", i_len);
-                dStrHexErr((const char *)ip, i_len, 0);
-                break;
-            }
-            /* c_id = (((ip[0] & 0xf) << 20) | (ip[1] << 12) | */
-                    /* (ip[2] << 4) | ((ip[3] & 0xf0) >> 4)); */
-            vsei = ip[3] & 0xf;
-            for (m = 1; m < 5; ++m) {
-                vsei <<= 8;
-                vsei |= ip[3 + m];
-            }
-            pr2serr("      0x");
-            for (m = 0; m < 16; ++m)
-                pr2serr("%02x", (unsigned int)ip[m]);
-            pr2serr("\n");
-        }
-        break;
-    case 4: /* Relative target port */
-        if ((1 != c_set) || (1 != assoc) || (4 != i_len)) {
-            pr2serr("      << expected binary code_set, target port "
-                    "association, length 4>>\n");
-            dStrHexErr((const char *)ip, i_len, 0);
-            break;
-        }
-        d_id = ((ip[2] << 8) | ip[3]);
-        pr2serr("      Relative target port: 0x%x\n", d_id);
-        break;
-    case 5: /* (primary) Target port group */
-        if ((1 != c_set) || (1 != assoc) || (4 != i_len)) {
-            pr2serr("      << expected binary code_set, target port "
-                    "association, length 4>>\n");
-            dStrHexErr((const char *)ip, i_len, 0);
-            break;
-        }
-        d_id = ((ip[2] << 8) | ip[3]);
-        pr2serr("      Target port group: 0x%x\n", d_id);
-        break;
-    case 6: /* Logical unit group */
-        if ((1 != c_set) || (0 != assoc) || (4 != i_len)) {
-            pr2serr("      << expected binary code_set, logical unit "
-                    "association, length 4>>\n");
-            dStrHexErr((const char *)ip, i_len, 0);
-            break;
-        }
-        d_id = ((ip[2] << 8) | ip[3]);
-        pr2serr("      Logical unit group: 0x%x\n", d_id);
-        break;
-    case 7: /* MD5 logical unit identifier */
-        if ((1 != c_set) || (0 != assoc)) {
-            pr2serr("      << expected binary code_set, logical unit "
-                    "association>>\n");
-            dStrHexErr((const char *)ip, i_len, 0);
-            break;
-        }
-        pr2serr("      MD5 logical unit identifier:\n");
-        dStrHexErr((const char *)ip, i_len, 0);
-        break;
-    case 8: /* SCSI name string */
-        if (3 != c_set) {
-            pr2serr("      << expected UTF-8 code_set>>\n");
-            dStrHexErr((const char *)ip, i_len, 0);
-            break;
-        }
-        pr2serr("      SCSI name string:\n");
-        /* does %s print out UTF-8 ok??
-         * Seems to depend on the locale. Looks ok here with my
-         * locale setting: en_AU.UTF-8
-         */
-        pr2serr("      %s\n", (const char *)ip);
-        break;
-    case 9: /* Protocol specific port identifier */
-        /* added in spc4r36, PIV must be set, proto_id indicates */
-        /* whether UAS (USB) or SOP (PCIe) or ... */
-        if (! piv)
-            pr2serr("      >>>> Protocol specific port identifier "
-                    "expects protocol\n"
-                    "           identifier to be valid and it is not\n");
-        if (TPROTO_UAS == p_id) {
-            pr2serr("      USB device address: 0x%x\n", 0x7f & ip[0]);
-            pr2serr("      USB interface number: 0x%x\n", ip[2]);
-        } else if (TPROTO_SOP == p_id) {
-            pr2serr("      PCIe routing ID, bus number: 0x%x\n", ip[0]);
-            pr2serr("          function number: 0x%x\n", ip[1]);
-            pr2serr("          [or device number: 0x%x, function number: "
-                    "0x%x]\n", (0x1f & (ip[1] >> 3)), 0x7 & ip[1]);
-        } else
-            pr2serr("      >>>> unexpected protocol indentifier: 0x%x\n"
-                    "           with Protocol specific port "
-                    "identifier\n", p_id);
-        break;
-    default: /* reserved */
-        pr2serr("      reserved designator=0x%x\n", desig_type);
-        dStrHexErr((const char *)ip, i_len, 0);
-        break;
-    }
+    sg_get_designation_descriptor_str(NULL, ucp, i_len, 1, verbose,
+                                      sizeof(c), c);
+    pr2serr("%s", c);
 }
 
 static int
@@ -1245,7 +1022,7 @@ desc_from_vpd_id(int sg_fd, unsigned char *desc, int desc_len,
         pr2serr("invalid VPD response\n");
         return SG_LIB_CAT_MALFORMED;
     }
-    len = ((rcBuff[2] << 8) + rcBuff[3]) + 4;
+    len = sg_get_unaligned_be16(rcBuff + 2) + 4;
     res = sg_ll_inquiry(sg_fd, 0, 1, VPD_DEVICE_ID, rcBuff, len, 1, verb);
     if (0 != res) {
         sg_get_category_sense_str(res, sizeof(b), b, verbose);
@@ -1312,9 +1089,7 @@ desc_from_vpd_id(int sg_fd, unsigned char *desc, int desc_len,
             memcpy(desc + 4, best, best_len + 4);
             desc[4] &= 0x1f;
             desc[28] = pad << 2;
-            desc[29] = (block_size >> 16) & 0xff;
-            desc[30] = (block_size >> 8) & 0xff;
-            desc[31] = block_size & 0xff;
+            sg_put_unaligned_be24((uint32_t)block_size, desc + 29);
             if (verbose > 3) {
                 pr2serr("Descriptor in hex (bs %d):\n", block_size);
                 dStrHexErr((const char *)desc, 32, 1);
@@ -1364,7 +1139,7 @@ process_flags(const char * arg, struct xcopy_fp_t * fp)
     char * cp;
     char * np;
 
-    strncpy(buff, arg, sizeof(buff));
+    strncpy(buff, arg, sizeof(buff) - 1);
     buff[sizeof(buff) - 1] = '\0';
     if ('\0' == buff[0]) {
         pr2serr("no flag found\n");
@@ -1413,7 +1188,7 @@ open_if(struct xcopy_fp_t * ifp, int verbose)
                 major(ifp->devno), minor(ifp->devno));
     if (FT_ERROR & ifp->sg_type) {
         pr2serr(ME "unable access %s\n", ifp->fname);
-        goto file_err;
+        return -SG_LIB_FILE_ERROR;
     }
     flags = O_NONBLOCK;
     if (ifp->excl)
@@ -1425,7 +1200,7 @@ open_if(struct xcopy_fp_t * ifp, int verbose)
             snprintf(ebuff, EBUFF_SZ,
                      ME "could not open %s for sg reading", ifp->fname);
             perror(ebuff);
-            goto file_err;
+            return -SG_LIB_FILE_ERROR;
         }
     }
     if (verbose)
@@ -1442,11 +1217,6 @@ open_if(struct xcopy_fp_t * ifp, int verbose)
         }
     }
     return infd;
-
-file_err:
-    if (infd >= 0)
-        close(infd);
-    return -SG_LIB_FILE_ERROR;
 }
 
 /* Returns open output file descriptor (>= 0), -1 for don't
@@ -1473,14 +1243,13 @@ open_of(struct xcopy_fp_t * ofp, int verbose)
             snprintf(ebuff, EBUFF_SZ,
                      ME "could not open %s for sg writing", ofp->fname);
             perror(ebuff);
-            goto file_err;
+            return -SG_LIB_FILE_ERROR;
         }
         if (verbose)
             pr2serr("        open output(sg_io), flags=0x%x\n", flags);
-    } else {
+    } else
         outfd = -1; /* don't bother opening */
-    }
-    if (ofp->flock) {
+    if ((outfd >= 0) && ofp->flock) {
         res = flock(outfd, LOCK_EX | LOCK_NB);
         if (res < 0) {
             close(outfd);
@@ -1491,9 +1260,6 @@ open_of(struct xcopy_fp_t * ofp, int verbose)
         }
     }
     return outfd;
-
-file_err:
-    return -SG_LIB_FILE_ERROR;
 }
 
 static int
@@ -1550,7 +1316,7 @@ main(int argc, char * argv[])
 
     for (k = 1; k < argc; k++) {
         if (argv[k]) {
-            strncpy(str, argv[k], STR_SZ);
+            strncpy(str, argv[k], STR_SZ - 1);
             str[STR_SZ - 1] = '\0';
         } else
             continue;
@@ -1625,7 +1391,7 @@ main(int argc, char * argv[])
                 pr2serr("Second IFILE argument??\n");
                 return SG_LIB_SYNTAX_ERROR;
             } else
-                strncpy(ixcf.fname, buf, INOUTF_SZ);
+                strncpy(ixcf.fname, buf, INOUTF_SZ - 1);
         } else if (0 == strcmp(key, "iflag")) {
             if (process_flags(buf, &ixcf)) {
                 pr2serr(ME "bad argument to 'iflag='\n");
@@ -1638,7 +1404,7 @@ main(int argc, char * argv[])
                 pr2serr("Second OFILE argument??\n");
                 return SG_LIB_SYNTAX_ERROR;
             } else
-                strncpy(oxcf.fname, buf, INOUTF_SZ);
+                strncpy(oxcf.fname, buf, INOUTF_SZ - 1);
         } else if (0 == strcmp(key, "oflag")) {
             if (process_flags(buf, &oxcf)) {
                 pr2serr(ME "bad argument to 'oflag='\n");

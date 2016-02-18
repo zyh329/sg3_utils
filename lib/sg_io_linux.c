@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999-2012 Douglas Gilbert.
+ * Copyright (c) 1999-2015 Douglas Gilbert.
  * All rights reserved.
  * Use of this source code is governed by a BSD-style
  * license that can be found in the BSD_LICENSE file.
@@ -7,21 +7,40 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include <ctype.h>
 
-// need to include the file in the build when sg_scan is built for Win32.
-// Hence the following guard ...
-//
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
+
 #ifdef SG_LIB_LINUX
 
 #include "sg_io_linux.h"
 
 
-/* Version 1.04 20120914 */
+/* Version 1.06 20151217 */
+
+#ifdef __GNUC__
+static int pr2ws(const char * fmt, ...)
+        __attribute__ ((format (printf, 1, 2)));
+#else
+static int pr2ws(const char * fmt, ...);
+#endif
+
+
+static int
+pr2ws(const char * fmt, ...)
+{
+    va_list args;
+    int n;
+
+    va_start(args, fmt);
+    n = vfprintf(sg_warnings_strm ? sg_warnings_strm : stderr, fmt, args);
+    va_end(args);
+    return n;
+}
 
 
 void
@@ -38,6 +57,7 @@ static const char * linux_host_bytes[] = {
     "DID_RESET", "DID_BAD_INTR", "DID_PASSTHROUGH", "DID_SOFT_ERROR",
     "DID_IMM_RETRY", "DID_REQUEUE", "DID_TRANSPORT_DISRUPTED",
     "DID_TRANSPORT_FAILFAST", "DID_TARGET_FAILURE", "DID_NEXUS_FAILURE",
+    "DID_ALLOC_FAILURE", "DID_MEDIUM_ERROR",
 };
 
 #define LINUX_HOST_BYTES_SZ \
@@ -46,13 +66,11 @@ static const char * linux_host_bytes[] = {
 void
 sg_print_host_status(int host_status)
 {
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
-    fprintf(sg_warnings_strm, "Host_status=0x%02x ", host_status);
+    pr2ws("Host_status=0x%02x ", host_status);
     if ((host_status < 0) || (host_status >= LINUX_HOST_BYTES_SZ))
-        fprintf(sg_warnings_strm, "is invalid ");
+        pr2ws("is invalid ");
     else
-        fprintf(sg_warnings_strm, "[%s] ", linux_host_bytes[host_status]);
+        pr2ws("[%s] ", linux_host_bytes[host_status]);
 }
 
 static const char * linux_driver_bytes[] = {
@@ -64,6 +82,7 @@ static const char * linux_driver_bytes[] = {
 #define LINUX_DRIVER_BYTES_SZ \
     (int)(sizeof(linux_driver_bytes) / sizeof(linux_driver_bytes[0]))
 
+#if 0
 static const char * linux_driver_suggests[] = {
     "SUGGEST_OK", "SUGGEST_RETRY", "SUGGEST_ABORT", "SUGGEST_REMAP",
     "SUGGEST_DIE", "UNKNOWN","UNKNOWN","UNKNOWN",
@@ -72,25 +91,25 @@ static const char * linux_driver_suggests[] = {
 
 #define LINUX_DRIVER_SUGGESTS_SZ \
     (int)(sizeof(linux_driver_suggests) / sizeof(linux_driver_suggests[0]))
+#endif
 
 
 void
 sg_print_driver_status(int driver_status)
 {
-    int driv, sugg;
+    int driv;
     const char * driv_cp = "invalid";
-    const char * sugg_cp = "invalid";
 
     driv = driver_status & SG_LIB_DRIVER_MASK;
     if (driv < LINUX_DRIVER_BYTES_SZ)
         driv_cp = linux_driver_bytes[driv];
+#if 0
     sugg = (driver_status & SG_LIB_SUGGEST_MASK) >> 4;
     if (sugg < LINUX_DRIVER_SUGGESTS_SZ)
         sugg_cp = linux_driver_suggests[sugg];
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
-    fprintf(sg_warnings_strm, "Driver_status=0x%02x", driver_status);
-    fprintf(sg_warnings_strm, " [%s, %s] ", driv_cp, sugg_cp);
+#endif
+    pr2ws("Driver_status=0x%02x", driver_status);
+    pr2ws(" [%s] ", driv_cp);
 }
 
 /* Returns 1 if no errors found and thus nothing printed; otherwise
@@ -103,18 +122,16 @@ sg_linux_sense_print(const char * leadin, int scsi_status, int host_status,
     int done_leadin = 0;
     int done_sense = 0;
 
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
     scsi_status &= 0x7e; /*sanity */
     if ((0 == scsi_status) && (0 == host_status) && (0 == driver_status))
         return 1;       /* No problems */
     if (0 != scsi_status) {
         if (leadin)
-            fprintf(sg_warnings_strm, "%s: ", leadin);
+            pr2ws("%s: ", leadin);
         done_leadin = 1;
-        fprintf(sg_warnings_strm, "SCSI status: ");
+        pr2ws("SCSI status: ");
         sg_print_scsi_status(scsi_status);
-        fprintf(sg_warnings_strm, "\n");
+        pr2ws("\n");
         if (sense_buffer && ((scsi_status == SAM_STAT_CHECK_CONDITION) ||
                              (scsi_status == SAM_STAT_COMMAND_TERMINATED))) {
             /* SAM_STAT_COMMAND_TERMINATED is obsolete */
@@ -124,26 +141,26 @@ sg_linux_sense_print(const char * leadin, int scsi_status, int host_status,
     }
     if (0 != host_status) {
         if (leadin && (! done_leadin))
-            fprintf(sg_warnings_strm, "%s: ", leadin);
+            pr2ws("%s: ", leadin);
         if (done_leadin)
-            fprintf(sg_warnings_strm, "plus...: ");
+            pr2ws("plus...: ");
         else
             done_leadin = 1;
         sg_print_host_status(host_status);
-        fprintf(sg_warnings_strm, "\n");
+        pr2ws("\n");
     }
     if (0 != driver_status) {
         if (done_sense &&
             (SG_LIB_DRIVER_SENSE == (SG_LIB_DRIVER_MASK & driver_status)))
             return 0;
         if (leadin && (! done_leadin))
-            fprintf(sg_warnings_strm, "%s: ", leadin);
+            pr2ws("%s: ", leadin);
         if (done_leadin)
-            fprintf(sg_warnings_strm, "plus...: ");
+            pr2ws("plus...: ");
         else
             done_leadin = 1;
         sg_print_driver_status(driver_status);
-        fprintf(sg_warnings_strm, "\n");
+        pr2ws("\n");
         if (sense_buffer && (! done_sense) &&
             (SG_LIB_DRIVER_SENSE == (SG_LIB_DRIVER_MASK & driver_status)))
             sg_print_sense(0, sense_buffer, sb_len, raw_sinfo);
@@ -229,10 +246,12 @@ sg_err_category_new(int scsi_status, int host_status, int driver_status,
             (SG_LIB_DID_BUS_BUSY == host_status) ||
             (SG_LIB_DID_TIME_OUT == host_status))
             return SG_LIB_CAT_TIMEOUT;
+        if (SG_LIB_DID_NEXUS_FAILURE == host_status)
+            return SG_LIB_CAT_RES_CONFLICT;
     }
     if (SG_LIB_DRIVER_TIMEOUT == masked_driver_status)
         return SG_LIB_CAT_TIMEOUT;
     return SG_LIB_CAT_OTHER;
 }
 
-#endif
+#endif  /* if SG_LIB_LINUX defined */

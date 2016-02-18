@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007-2014 Douglas Gilbert.
+ * Copyright (c) 2007-2016 Douglas Gilbert.
  * All rights reserved.
  * Use of this source code is governed by a BSD-style
  * license that can be found in the BSD_LICENSE file.
@@ -17,7 +17,19 @@
 #endif
 
 
-const char * sg_lib_version_str = "2.01 20140521";  /* spc4r37, sbc4r02 */
+const char * sg_lib_version_str = "2.17 20160202";  /* spc5r08, sbc4r10 */
+
+
+/* indexed by pdt; those that map to own index do not decay */
+int sg_lib_pdt_decay_arr[32] = {
+    PDT_DISK, PDT_TAPE, PDT_TAPE /* printer */, PDT_PROCESSOR,
+    PDT_DISK /* WO */, PDT_MMC, PDT_SCANNER, PDT_DISK /* optical */,
+    PDT_MCHANGER, PDT_COMMS, 0xa, 0xb,
+    PDT_SAC, PDT_SES, PDT_DISK /* rbc */, PDT_OCRW,
+    PDT_BCC, PDT_OSD, PDT_TAPE /* adc */, PDT_SMD,
+    PDT_DISK /* zbc */, 0x15, 0x16, 0x17,
+    0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, PDT_WLUN, PDT_UNKNOWN
+};
 
 #ifdef SG_SCSI_STRINGS
 struct sg_lib_value_name_t sg_lib_normal_opcodes[] = {
@@ -93,9 +105,9 @@ struct sg_lib_value_name_t sg_lib_normal_opcodes[] = {
     {0x39, 0, "Compare"},               /* obsolete in SPC-4 r11 */
     {0x3a, 0, "Copy and verify"},       /* obsolete in SPC-4 r11 */
     {0x3b, 0, "Write buffer"},
-    {0x3c, 0, "Read buffer"},
+    {0x3c, 0, "Read buffer(10)"},
     {0x3d, 0, "Update block"},
-    {0x3e, 0, "Read long(10)"},  /* SBC-3 r31 recommends Read long(16) */
+    {0x3e, 0, "Read long(10)"},         /* obsolete in SBC-4 r7 */
     {0x3f, 0, "Write long(10)"}, /* SBC-3 r31 recommends Write long(16) */
     {0x40, 0, "Change definition"},     /* obsolete in SPC-4 r11 */
     {0x41, 0, "Write same(10)"}, /* SBC-3 r31 recommends Write same(16) */
@@ -117,7 +129,7 @@ struct sg_lib_value_name_t sg_lib_normal_opcodes[] = {
     {0x51, PDT_MMC, "Read disk information"},
     {0x52, 0, "Xdread(10)"},            /* obsolete in SBC-3 r31 */
     {0x52, PDT_MMC, "Read track information"},
-    {0x53, 0, "Reserve track"},
+    {0x53, 0, "Xdwriteread(10)"},
     {0x54, 0, "Send OPC information"},
     {0x55, 0, "Mode select(10)"},
     {0x56, 0, "Reserve(10)"},           /* obsolete in SPC-4 r11 */
@@ -158,6 +170,10 @@ struct sg_lib_value_name_t sg_lib_normal_opcodes[] = {
     {0x92, PDT_TAPE, "Locate(16)"},
     {0x93, 0, "Write same(16)"},
     {0x93, PDT_TAPE, "Erase(16)"},
+    {0x94, PDT_ZBC, "ZBC out"},  /* new sbc4r04, has service actions */
+    {0x95, PDT_ZBC, "ZBC in"},   /* new sbc4r04, has service actions */
+    {0x9a, 0, "Write stream(16)"},      /* added sbc4r07 */
+    {0x9b, 0, "Read buffer(16)"},       /* added spc5r02 */
     {0x9c, 0, "Write atomic(16)"},
     {0x9d, 0, "Service action bidirectional"},  /* added spc4r35 */
     {0x9e, 0, "Service action in(16)"},
@@ -213,7 +229,8 @@ struct sg_lib_value_name_t sg_lib_normal_opcodes[] = {
     {0xffff, 0, NULL},
 };
 
-struct sg_lib_value_name_t sg_lib_read_buff_arr[] = {  /* opcode 0x3c */
+/* Read buffer [0x3c] service actions, need prefix */
+struct sg_lib_value_name_t sg_lib_read_buff_arr[] = {
     {0x0, 0, "combined header and data [or multiple modes]"},
     {0x2, 0, "data"},
     {0x3, 0, "descriptor"},
@@ -224,7 +241,8 @@ struct sg_lib_value_name_t sg_lib_read_buff_arr[] = {  /* opcode 0x3c */
     {0xffff, 0, NULL},
 };
 
-struct sg_lib_value_name_t sg_lib_write_buff_arr[] = {  /* opcode 0x3b */
+/* Write buffer [0x3b] service actions, need prefix */
+struct sg_lib_value_name_t sg_lib_write_buff_arr[] = {
     {0x0, 0, "combined header and data [or multiple modes]"},
     {0x2, 0, "data"},
     {0x4, 0, "download microcode and activate"},
@@ -242,7 +260,17 @@ struct sg_lib_value_name_t sg_lib_write_buff_arr[] = {  /* opcode 0x3b */
     {0xffff, 0, NULL},
 };
 
-struct sg_lib_value_name_t sg_lib_maint_in_arr[] = {  /* opcode 0xa3 */
+/* Read position (SSC) [0x34] service actions, need prefix */
+struct sg_lib_value_name_t sg_lib_read_pos_arr[] = {
+    {0x0, PDT_TAPE, "short form - block id"},
+    {0x1, PDT_TAPE, "short form - vendor specific"},
+    {0x6, PDT_TAPE, "long form"},
+    {0x8, PDT_TAPE, "extended form"},
+    {0xffff, 0, NULL},
+};
+
+/* Maintenance in [0xa3] service actions */
+struct sg_lib_value_name_t sg_lib_maint_in_arr[] = {
     {0x5, 0, "Report identifying information"},
                 /* was "Report device identifier" prior to spc4r07 */
     {0xa, 0, "Report target port groups"},
@@ -252,10 +280,13 @@ struct sg_lib_value_name_t sg_lib_maint_in_arr[] = {  /* opcode 0xa3 */
     {0xe, 0, "Report priority"},
     {0xf, 0, "Report timestamp"},
     {0x10, 0, "Management protocol in"},
+    {0x1d, 0, "Report provisioning initialization pattern"},
+    {0x1f, 0, "Maintenance in vendor specific"},
     {0xffff, 0, NULL},
 };
 
-struct sg_lib_value_name_t sg_lib_maint_out_arr[] = {  /* opcode 0xa4 */
+/* Maintenance out [0xa4] service actions */
+struct sg_lib_value_name_t sg_lib_maint_out_arr[] = {
     {0x6, 0, "Set identifying information"},
                 /* was "Set device identifier" prior to spc4r07 */
     {0xa, 0, "Set target port groups"},
@@ -264,71 +295,83 @@ struct sg_lib_value_name_t sg_lib_maint_out_arr[] = {  /* opcode 0xa4 */
     {0xe, 0, "Set priority"},
     {0xf, 0, "Set timestamp"},
     {0x10, 0, "Management protocol out"},
+    {0x1f, 0, "Maintenance out vendor specific"},
     {0xffff, 0, NULL},
 };
 
-struct sg_lib_value_name_t sg_lib_sanitize_sa_arr[] = { /* opcode 0x48 */
-    {0x1, 0, "Sanitize, overwrite"},
-    {0x2, 0, "Sanitize, block erase"},
-    {0x3, 0, "Sanitize, cryptographic erase"},
-    {0x1f, 0, "Sanitize, exit failure mode"},
+/* Sanitize [0x48] service actions, need prefix */
+struct sg_lib_value_name_t sg_lib_sanitize_sa_arr[] = {
+    {0x1, 0, "overwrite"},
+    {0x2, 0, "block erase"},
+    {0x3, 0, "cryptographic erase"},
+    {0x1f, 0, "exit failure mode"},
     {0xffff, 0, NULL},
 };
 
-struct sg_lib_value_name_t sg_lib_serv_in12_arr[] = { /* opcode 0xab */
+/* Service action in(12) [0xab] service actions */
+struct sg_lib_value_name_t sg_lib_serv_in12_arr[] = {
     {0x1, 0, "Read media serial number"},
     {0xffff, 0, NULL},
 };
 
-struct sg_lib_value_name_t sg_lib_serv_out12_arr[] = { /* opcode 0xa9 */
+/* Service action out(12) [0xa9] service actions */
+struct sg_lib_value_name_t sg_lib_serv_out12_arr[] = {
     {0xff, 0, "Impossible command name"},
     {0xffff, 0, NULL},
 };
 
-struct sg_lib_value_name_t sg_lib_serv_in16_arr[] = { /* opcode 0x9e */
+/* Service action in(16) [0x9e] service actions */
+struct sg_lib_value_name_t sg_lib_serv_in16_arr[] = {
     {0x10, 0, "Read capacity(16)"},
-    {0x11, 0, "Read long(16)"},
+    {0x11, 0, "Read long(16)"},         /* obsolete in SBC-4 r7 */
     {0x12, 0, "Get LBA status"},
     {0x13, 0, "Report referrals"},
-    {0x14, PDT_ZBC, "Report zones"},
+    {0x14, 0, "Stream control"},
+    {0x15, 0, "Background control"},
+    {0x16, 0, "Get stream status"},
     {0xffff, 0, NULL},
 };
 
-struct sg_lib_value_name_t sg_lib_serv_out16_arr[] = { /* opcode 0x9f */
+/* Service action out(16) [0x9f] service actions */
+struct sg_lib_value_name_t sg_lib_serv_out16_arr[] = {
     {0x11, 0, "Write long(16)"},
     {0x14, PDT_ZBC, "Reset write pointer"},
     {0x1f, PDT_ADC, "Notify data transfer device(16)"},
     {0xffff, 0, NULL},
 };
 
-struct sg_lib_value_name_t sg_lib_serv_bidi_arr[] = { /* opcode 0x9d */
+/* Service action bidirectional [0x9d] service actions */
+struct sg_lib_value_name_t sg_lib_serv_bidi_arr[] = {
     {0xffff, 0, NULL},
 };
 
-struct sg_lib_value_name_t sg_lib_pr_in_arr[] = { /* opcode 0x5e */
-    {0x0, 0, "Persistent reserve in, read keys"},
-    {0x1, 0, "Persistent reserve in, read reservation"},
-    {0x2, 0, "Persistent reserve in, report capabilities"},
-    {0x3, 0, "Persistent reserve in, read full status"},
+/* Persistent reserve in [0x5e] service actions, need prefix */
+struct sg_lib_value_name_t sg_lib_pr_in_arr[] = {
+    {0x0, 0, "read keys"},
+    {0x1, 0, "read reservation"},
+    {0x2, 0, "report capabilities"},
+    {0x3, 0, "read full status"},
     {0xffff, 0, NULL},
 };
 
-struct sg_lib_value_name_t sg_lib_pr_out_arr[] = { /* opcode 0x5f */
-    {0x0, 0, "Persistent reserve out, register"},
-    {0x1, 0, "Persistent reserve out, reserve"},
-    {0x2, 0, "Persistent reserve out, release"},
-    {0x3, 0, "Persistent reserve out, clear"},
-    {0x4, 0, "Persistent reserve out, preempt"},
-    {0x5, 0, "Persistent reserve out, preempt and abort"},
-    {0x6, 0, "Persistent reserve out, register and ignore existing key"},
-    {0x7, 0, "Persistent reserve out, register and move"},
-    {0x8, 0, "Persistent reserve out, replace lost reservation"},
+/* Persistent reserve out [0x5f] service actions, need prefix */
+struct sg_lib_value_name_t sg_lib_pr_out_arr[] = {
+    {0x0, 0, "register"},
+    {0x1, 0, "reserve"},
+    {0x2, 0, "release"},
+    {0x3, 0, "clear"},
+    {0x4, 0, "preempt"},
+    {0x5, 0, "preempt and abort"},
+    {0x6, 0, "register and ignore existing key"},
+    {0x7, 0, "register and move"},
+    {0x8, 0, "replace lost reservation"},
     {0xffff, 0, NULL},
 };
 
-/* 'Extended copy' was renamed 'Third party copy in' in spc4r34 */
-/* LID1 is an abbreviation of List Identifier length of 1 byte */
-struct sg_lib_value_name_t sg_lib_xcopy_sa_arr[] = { /* opcode 0x83 */
+/* Third party copy in [0x83] service actions
+ * Opcode 'Receive copy results' was renamed 'Third party copy in' in spc4r34
+ * LID1 is an abbreviation of List Identifier length of 1 byte */
+struct sg_lib_value_name_t sg_lib_xcopy_sa_arr[] = {
     {0x0, 0, "Extended copy(LID1)"},
     {0x1, 0, "Extended copy(LID4)"},
     {0x10, 0, "Populate token"},
@@ -337,9 +380,10 @@ struct sg_lib_value_name_t sg_lib_xcopy_sa_arr[] = { /* opcode 0x83 */
     {0xffff, 0, NULL},
 };
 
-/* 'Receive copy results' was renamed 'Third party copy out' in spc4r34 */
-/* LID4 is an abbreviation of List Identifier length of 4 bytes */
-struct sg_lib_value_name_t sg_lib_rec_copy_sa_arr[] = { /* opcode 0x84 */
+/* Third party copy out [0x84] service actions
+ * Opcode 'Extended copy' was renamed 'Third party copy out' in spc4r34
+ * LID4 is an abbreviation of List Identifier length of 4 bytes */
+struct sg_lib_value_name_t sg_lib_rec_copy_sa_arr[] = {
     {0x0, 0, "Receive copy status(LID1)"},
     {0x1, 0, "Receive copy data(LID1)"},
     {0x3, 0, "Receive copy operating parameters"},
@@ -351,6 +395,7 @@ struct sg_lib_value_name_t sg_lib_rec_copy_sa_arr[] = { /* opcode 0x84 */
     {0xffff, 0, NULL},
 };
 
+/* Variable length cdb [0x7f] service actions (more than 16 bytes long) */
 struct sg_lib_value_name_t sg_lib_variable_length_arr[] = {
     {0x1, 0, "Rebuild(32)"},
     {0x2, 0, "Regenerate(32)"},
@@ -363,10 +408,11 @@ struct sg_lib_value_name_t sg_lib_variable_length_arr[] = {
     {0x9, 0, "Read(32)"},
     {0xa, 0, "Verify(32)"},
     {0xb, 0, "Write(32)"},
-    {0xc, 0, "Write an verify(32)"},
+    {0xc, 0, "Write and verify(32)"},
     {0xd, 0, "Write same(32)"},
     {0xe, 0, "Orwrite(32)"},         /* added sbc3r25 */
     {0xf, 0, "Atomic write(32)"},    /* added sbc4r02 */
+    {0x10, 0, "Write stream(32)"},   /* added sbc4r07 */
     {0x1800, 0, "Receive credential"},
     {0x8801, 0, "Format OSD (osd)"},
     {0x8802, 0, "Create (osd)"},
@@ -424,7 +470,33 @@ struct sg_lib_value_name_t sg_lib_variable_length_arr[] = {
     {0x8f7f, 0, "Perform task management function (osd)"},
     {0xffff, 0, NULL},
 };
-#else
+
+/* Zoning out [0x94] service actions */
+struct sg_lib_value_name_t sg_lib_zoning_out_arr[] = {
+    {0x1, PDT_ZBC, "Close zone"},
+    {0x2, PDT_ZBC, "Finish zone"},
+    {0x3, PDT_ZBC, "Open zone"},
+    {0x4, PDT_ZBC, "Reset write pointer"},
+    {0xffff, 0, NULL},
+};
+
+/* Zoning in [0x95] service actions */
+struct sg_lib_value_name_t sg_lib_zoning_in_arr[] = {
+    {0x0, PDT_ZBC, "Report zones"},
+    {0xffff, 0, NULL},
+};
+
+/* Read attribute [0x8c] service actions */
+struct sg_lib_value_name_t sg_lib_read_attr_arr[] = {
+    {0x0, 0, "attribute values"},
+    {0x1, 0, "attribute list"},
+    {0x2, 0, "logical volume list"},
+    {0x3, 0, "partition list"},
+    {0x5, 0, "supported attributes"},
+    {0xffff, 0, NULL},
+};
+
+#else   /* SG_SCSI_STRINGS */
 
 struct sg_lib_value_name_t sg_lib_normal_opcodes[] = {
     {0xffff, 0, NULL},
@@ -490,11 +562,23 @@ struct sg_lib_value_name_t sg_lib_variable_length_arr[] = {
     {0xffff, 0, NULL},
 };
 
-#endif
+struct sg_lib_value_name_t sg_lib_zoning_out_arr[] = {
+    {0xffff, 0, NULL},
+};
+
+struct sg_lib_value_name_t sg_lib_zoning_in_arr[] = {
+    {0xffff, 0, NULL},
+};
+
+struct sg_lib_value_name_t sg_lib_read_attr_arr[] = {
+    {0xffff, 0, NULL},
+};
+
+#endif  /* SG_SCSI_STRINGS */
 
 /* A conveniently formatted list of SCSI ASC/ASCQ codes and their
  * corresponding text can be found at: www.t10.org/lists/asc-num.txt
- * The following should match asc-num.txt dated 20140516 */
+ * The following should match asc-num.txt dated 20150423 */
 
 #ifdef SG_SCSI_STRINGS
 struct sg_lib_asc_ascq_range_t sg_lib_asc_ascq_range[] =
@@ -595,6 +679,7 @@ struct sg_lib_asc_ascq_t sg_lib_asc_ascq[] =
     {0x09,0x02,"Focus servo failure"},
     {0x09,0x03,"Spindle servo failure"},
     {0x09,0x04,"Head select fault"},
+    {0x09,0x05,"Vibration induced tracking error"},
     {0x0A,0x00,"Error log overflow"},
     {0x0B,0x00,"Warning"},
     {0x0B,0x01,"Warning - specified temperature exceeded"},
@@ -606,6 +691,14 @@ struct sg_lib_asc_ascq_t sg_lib_asc_ascq[] =
     {0x0B,0x07,"Warning - degraded power to non-volatile cache"},
     {0x0B,0x08,"Warning - power loss expected"},
     {0x0B,0x09,"Warning - device statistics notification active"},
+    {0x0B,0x0A,"Warning - high critical temperature limit exceeded"},
+    {0x0B,0x0B,"Warning - low critical temperature limit exceeded"},
+    {0x0B,0x0C,"Warning - high operating temperature limit exceeded"},
+    {0x0B,0x0D,"Warning - low operating temperature limit exceeded"},
+    {0x0B,0x0E,"Warning - high critical humidity limit exceeded"},
+    {0x0B,0x0F,"Warning - low critical humidity limit exceeded"},
+    {0x0B,0x10,"Warning - high operating humidity limit exceeded"},
+    {0x0B,0x11,"Warning - low operating humidity limit exceeded"},
     {0x0C,0x00,"Write error"},
     {0x0C,0x01,"Write error - recovered with auto reallocation"},
     {0x0C,0x02,"Write error - auto reallocation failed"},
@@ -622,6 +715,9 @@ struct sg_lib_asc_ascq_t sg_lib_asc_ascq[] =
     {0x0C,0x0D,"Write error - not enough unsolicited data"},
     {0x0C,0x0E,"Multiple write errors"},
     {0x0C,0x0F,"Defects in error window"},
+    {0x0C,0x10,"Incomplete multiple atomic write operations"},
+    {0x0C,0x11,"Write error - recovery scan needed"},
+    {0x0C,0x12,"Write error - insufficient zone resources"},
     {0x0D,0x00,"Error detected by third party temporary initiator"},
     {0x0D,0x01,"Third party device failure"},
     {0x0D,0x02,"Copy target device not reachable"},
@@ -723,6 +819,9 @@ struct sg_lib_asc_ascq_t sg_lib_asc_ascq[] =
     {0x20,0x0A,"Access denied - invalid proxy token"},
     {0x20,0x0B,"Access denied - ACL LUN conflict"},
     {0x20,0x0C,"Illegal command when not in append-only mode"},
+    {0x20,0x0D,"Not an administrative logical unit"},
+    {0x20,0x0E,"Not a subsidiary logical unit"},
+    {0x20,0x0F,"Not a conglomerate logical unit"},
     {0x21,0x00,"Logical block address out of range"},
     {0x21,0x01,"Invalid element address"},
     {0x21,0x02,"Invalid address for write"},
@@ -731,6 +830,7 @@ struct sg_lib_asc_ascq_t sg_lib_asc_ascq[] =
     {0x21,0x05,"Write boundary violation"},
     {0x21,0x06,"Attempt to read invalid data"},
     {0x21,0x07,"Read boundary violation"},
+    {0x21,0x08,"Misaligned write command"},
     {0x22,0x00,"Illegal function (use 20 00, 24 00, or 26 00)"},
     {0x23,0x00,"Invalid token operation, cause not reportable"},
     {0x23,0x01,"Invalid token operation, unsupported token type"},
@@ -773,6 +873,7 @@ struct sg_lib_asc_ascq_t sg_lib_asc_ascq[] =
     {0x26,0x10,"Data decryption key fail limit reached"},
     {0x26,0x11,"Incomplete key-associated data set"},
     {0x26,0x12,"Vendor specific key reference not found"},
+    {0x26,0x13,"Application tag mode page is invalid"},
     {0x27,0x00,"Write protected"},
     {0x27,0x01,"Hardware write protected"},
     {0x27,0x02,"Logical unit software write protected"},
@@ -814,6 +915,7 @@ struct sg_lib_asc_ascq_t sg_lib_asc_ascq[] =
     {0x2A,0x0b,"Error history snapshot released"},
     {0x2A,0x14,"SA creation capabilities data has changed"},
     {0x2A,0x15,"Medium removal prevention preempted"},
+    {0x2A,0x16,"Zone reset write pointer recommended"},
     {0x2B,0x00,"Copy cannot execute since host cannot disconnect"},
     {0x2C,0x00,"Command sequence error"},
     {0x2C,0x01,"Too many windows specified"},
@@ -828,6 +930,11 @@ struct sg_lib_asc_ascq_t sg_lib_asc_ascq[] =
     {0x2C,0x0A,"Partition or collection contains user objects"},
     {0x2C,0x0B,"Not reserved"},
     {0x2C,0x0C,"ORWRITE generation does not match"},
+    {0x2C,0x0D,"Reset write pointer not allowed"},
+    {0x2C,0x0E,"Zone is offline"},
+    {0x2C,0x0F,"Stream not open"},
+    {0x2C,0x10,"Unwritten data in zone"},
+    {0x2C,0x11,"Descriptor format sense data required"},
     {0x2D,0x00,"Overwrite error on update in place"},
     {0x2E,0x00,"Insufficient time for operation"},
     {0x2E,0x01,"Command timeout before processing"},
@@ -939,6 +1046,10 @@ struct sg_lib_asc_ascq_t sg_lib_asc_ascq[] =
     {0x3F,0x14,"iSCSI IP address changed"},
     {0x3F,0x15,"Inspect referrals sense descriptors"},
     {0x3F,0x16,"Microcode has been changed without reset"},
+    {0x3F,0x17,"Zone transition to full"},
+    {0x3F,0x18,"Bind completed"},
+    {0x3F,0x19,"Bind redirected"},
+    {0x3F,0x1A,"Subsidiary binding changed"},
 
     /*
      * ASC 0x40, 0x41 and 0x42 overridden by "additional2" array entries
@@ -1031,6 +1142,10 @@ struct sg_lib_asc_ascq_t sg_lib_asc_ascq[] =
     {0x55,0x0b,"Insufficient power for operation"},
     {0x55,0x0c,"Insufficient resources to create rod"},
     {0x55,0x0d,"Insufficient resources to create rod token"},
+    {0x55,0x0e,"Insufficient zone resources"},
+    {0x55,0x0f,"Insufficient zone resources to complete write"},
+    {0x55,0x10,"Maximum number of streams open"},
+    {0x55,0x11,"Insufficient resources to bind"},
     {0x57,0x00,"Unable to recover table-of-contents"},
     {0x58,0x00,"Generation does not exist"},
     {0x59,0x00,"Updated block read"},
@@ -1170,6 +1285,8 @@ struct sg_lib_asc_ascq_t sg_lib_asc_ascq[] =
     {0x67,0x09,"Multiply assigned logical unit"},
     {0x67,0x0A,"Set target port groups command failed"},
     {0x67,0x0B,"ATA device feature not enabled"},
+    {0x67,0x0C,"Command rejected"},
+    {0x67,0x0D,"Explicit bind not allowed"},
     {0x68,0x00,"Logical unit not configured"},
     {0x68,0x01,"Subsidiary logical unit not configured"},
     {0x69,0x00,"Data loss on logical unit"},
@@ -1191,6 +1308,9 @@ struct sg_lib_asc_ascq_t sg_lib_asc_ascq[] =
     {0x6F,0x05,"Drive region must be permanent/region reset count error"},
     {0x6F,0x06,"Insufficient block count for binding nonce recording"},
     {0x6F,0x07,"Conflict in binding nonce recording"},
+    {0x6F,0x08,"Insufficient permission"},
+    {0x6F,0x09,"Invalid drive-host pairing server"},
+    {0x6F,0x0A,"Drive-host pairing suspended"},
     /*
      * ASC 0x70 overridden by an "additional2" array entry
      * so there is no need to have them here.
@@ -1246,7 +1366,9 @@ struct sg_lib_asc_ascq_t sg_lib_asc_ascq[] =
     {0x74,0x79,"Security conflict in translated device"},
     {0, 0, NULL}
 };
-#else
+
+#else   /* SG_SCSI_STRINGS */
+
 struct sg_lib_asc_ascq_range_t sg_lib_asc_ascq_range[] =
 {
     {0, 0, 0, NULL}
@@ -1286,9 +1408,9 @@ const char * sg_lib_sense_key_desc[] = {
 const char * sg_lib_pdt_strs[] = {
     /* 0 */ "disk",
     "tape",
-    "printer",
+    "printer",                  /* obsolete, spc5r01 */
     "processor",        /* often SAF-TE device, copy manager */
-    "write once optical disk",
+    "write once optical disk",  /* obsolete, spc5r01 */
     /* 5 */ "cd/dvd",
     "scanner",                  /* obsolete */
     "optical memory device",
@@ -1303,7 +1425,7 @@ const char * sg_lib_pdt_strs[] = {
     /* 0x10 */ "bridge controller commands",
     "object based storage",
     "automation/driver interface",
-    "security manager device",
+    "security manager device",  /* obsolete, spc5r01 */
     "zoned block commands",
     "0x15", "0x16", "0x17", "0x18",
     "0x19", "0x1a", "0x1b", "0x1c", "0x1d",
@@ -1314,16 +1436,17 @@ const char * sg_lib_pdt_strs[] = {
 const char * sg_lib_transport_proto_strs[] =
 {
     "Fibre Channel Protocol for SCSI (FCP-4)",
-    "SCSI Parallel Interface (SPI-5)",
+    "SCSI Parallel Interface (SPI-5)",  /* obsolete in spc5r01 */
     "Serial Storage Architecture SCSI-3 Protocol (SSA-S3P)",
     "Serial Bus Protocol for IEEE 1394 (SBP-3)",
     "SCSI RDMA Protocol (SRP)",
     "Internet SCSI (iSCSI)",
-    "Serial Attached SCSI Protocol (SPL-3)",
+    "Serial Attached SCSI Protocol (SPL-4)",
     "Automation/Drive Interface Transport (ADT-2)",
     "AT Attachment Interface (ACS-2)",          /* 0x8 */
     "USB Attached SCSI (UAS-2)",
     "SCSI over PCI Express (SOP)",
-    "Oxb", "Oxc", "Oxd", "Oxe",
+    "PCIe",                             /* added in spc5r02 */
+    "Oxc", "Oxd", "Oxe",
     "No specific protocol"
 };

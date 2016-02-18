@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2004-2014 Douglas Gilbert.
+ * Copyright (c) 2004-2016 Douglas Gilbert.
  * All rights reserved.
  * Use of this source code is governed by a BSD-style
  * license that can be found in the BSD_LICENSE file.
@@ -9,7 +9,6 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdarg.h>
 #include <string.h>
 #include <ctype.h>
 #include <getopt.h>
@@ -22,14 +21,16 @@
 #include "sg_lib.h"
 #include "sg_cmds_basic.h"
 #include "sg_cmds_extra.h"
+#include "sg_unaligned.h"
 #include "sg_pt.h"      /* needed for scsi_pt_win32_direct() */
+#include "sg_pr2serr.h"
 
 /*
  * This program issues SCSI SEND DIAGNOSTIC and RECEIVE DIAGNOSTIC RESULTS
  * commands tailored for SES (enclosure) devices.
  */
 
-static const char * version_str = "1.91 20140515";    /* ses3r06 */
+static const char * version_str = "2.07 20160201";    /* ses3r08->11 */
 
 #define MX_ALLOC_LEN ((64 * 1024) - 4)  /* max allowable for big enclosures */
 #define MX_ELEM_HDR 1024
@@ -68,7 +69,7 @@ static const char * version_str = "1.91 20140515";    /* ses3r06 */
 #define TEMPERATURE_ETC 0x4
 #define DOOR_ETC 0x5    /* prior to ses3r05 was DOOR_LOCK_ETC */
 #define AUD_ALARM_ETC 0x6
-#define ESC_ELECTRONICS_ETC 0x7
+#define ENC_ELECTRONICS_ETC 0x7
 #define SCC_CELECTR_ETC 0x8
 #define NV_CACHE_ETC 0x9
 #define INV_OP_REASON_ETC 0xa
@@ -87,6 +88,9 @@ static const char * version_str = "1.91 20140515";    /* ses3r06 */
 #define ARRAY_DEV_ETC 0x17
 #define SAS_EXPANDER_ETC 0x18
 #define SAS_CONNECTOR_ETC 0x19
+#define LAST_ETC SAS_CONNECTOR_ETC      /* adjust as necessary */
+
+#define NUM_ETC (LAST_ETC + 1)
 
 
 struct element_type_t {
@@ -101,7 +105,7 @@ struct opts_t {
     int do_control;
     int do_data;
     int dev_slot_num;
-    int do_enumerate;
+    int enumerate;
     int eiioe_auto;
     int eiioe_force;
     int do_filter;
@@ -114,6 +118,7 @@ struct opts_t {
     int inner_hex;
     int do_join;
     int do_list;
+    int mask_ign;       /* element read-mask-modify-write actions */
     int maxlen;
     int seid;
     int seid_given;
@@ -124,6 +129,7 @@ struct opts_t {
     int do_status;
     int verbose;
     int do_version;
+    int warn;
     int num_cgs;
     int arr_len;
     unsigned char sas_addr[8];
@@ -203,6 +209,7 @@ struct acronym2tuple {
     int start_byte;     /* origin 0, normally 0 to 3 */
     int start_bit;      /* 7 (MSB or rightmost in SES drafts) to 0 (LSB) */
     int num_bits;       /* usually 1 */
+    const char * info;  /* optional, set to NULL if not used */
 };
 
 /* Structure for holding (sub-)enclosure information found in the
@@ -359,7 +366,7 @@ static struct element_type_t element_type_arr[] = {
     {DOOR_ETC, "do", "Door"},   /* prior to ses3r05 was 'dl' (for Door Lock)
                                    but the "Lock" has been dropped */
     {AUD_ALARM_ETC, "aa", "Audible alarm"},
-    {ESC_ELECTRONICS_ETC, "esc", "Enclosure services controller electronics"},
+    {ENC_ELECTRONICS_ETC, "esc", "Enclosure services controller electronics"},
     {SCC_CELECTR_ETC, "sce", "SCC controller electronics"},
     {NV_CACHE_ETC, "nc", "Nonvolatile cache"},
     {INV_OP_REASON_ETC, "ior", "Invalid operation reason"},
@@ -387,73 +394,214 @@ static struct element_type_t element_type_by_code =
 /* Many control element names below have "RQST" in front in drafts.
    These are for the Enclosure Control/Status diagnostic page */
 static struct acronym2tuple ecs_a2t_arr[] = {
-   {"active", DEVICE_ETC, 2, 7, 1},     /* in control but not in status */
-   {"active", ARRAY_DEV_ETC, 2, 7, 1},  /* in control but not in status */
-   {"conscheck", ARRAY_DEV_ETC, 1, 4, 1},
-   {"disable", -1, 0, 5, 1},            /* the -1 is for all element types */
-   {"devoff", DEVICE_ETC, 3, 4, 1},     /* device off */
-   {"devoff", ARRAY_DEV_ETC, 3, 4, 1},
-   {"dnr", DEVICE_ETC, 2, 6, 1},        /* do not remove */
-   {"dnr", ARRAY_DEV_ETC, 2, 6, 1},
-   {"fault", DEVICE_ETC, 3, 5, 1},
-   {"fault", ARRAY_DEV_ETC, 3, 5, 1},
-   {"hotspare", ARRAY_DEV_ETC, 1, 5, 1},
-   {"ident", DEVICE_ETC, 2, 1, 1},
-   {"ident", ARRAY_DEV_ETC, 2, 1, 1},
-   {"ident", POWER_SUPPLY_ETC, 1, 7, 1},
-   {"ident", COOLING_ETC, 1, 7, 1},
-   {"ident", ENCLOSURE_ETC, 1, 7, 1},
-   {"incritarray", ARRAY_DEV_ETC, 1, 3, 1},
-   {"infailedarray", ARRAY_DEV_ETC, 1, 2, 1},
-   {"insert", DEVICE_ETC, 2, 3, 1},
-   {"insert", ARRAY_DEV_ETC, 2, 3, 1},
-   {"locate", DEVICE_ETC, 2, 1, 1},
-   {"locate", ARRAY_DEV_ETC, 2, 1, 1},
-   {"locate", POWER_SUPPLY_ETC, 1, 7, 1},
-   {"locate", COOLING_ETC, 1, 7, 1},
-   {"locate", ENCLOSURE_ETC, 1, 7, 1},
-   {"missing", DEVICE_ETC, 2, 4, 1},
-   {"missing", ARRAY_DEV_ETC, 2, 4, 1},
-   {"ok", ARRAY_DEV_ETC, 1, 7, 1},
-   {"locate", DEVICE_ETC, 2, 1, 1},
-   {"locate", ARRAY_DEV_ETC, 2, 1, 1},
-   {"prdfail", -1, 0, 6, 1},
-   {"rebuildremap", ARRAY_DEV_ETC, 1, 1, 1},
-   {"remove", DEVICE_ETC, 2, 2, 1},
-   {"remove", ARRAY_DEV_ETC, 2, 2, 1},
-   {"rrabort", ARRAY_DEV_ETC, 1, 0, 1},
-   {"rsvddevice", ARRAY_DEV_ETC, 1, 6, 1},
-   {"speed_act", COOLING_ETC, 2, 7, 8}, /* actual speed (rpm / 10) */
-   {"speed_code", COOLING_ETC, 3, 2, 3},
-   {"swap", -1, 0, 4, 1},               /* Reset swap */
-   {NULL, 0, 0, 0, 0},
+    {"ac_fail", UI_POWER_SUPPLY_ETC, 2, 4, 1, NULL},
+    {"ac_hi", UI_POWER_SUPPLY_ETC, 2, 6, 1, NULL},
+    {"ac_lo", UI_POWER_SUPPLY_ETC, 2, 7, 1, NULL},
+    {"ac_qual", UI_POWER_SUPPLY_ETC, 2, 5, 1, NULL},
+    {"active", DEVICE_ETC, 2, 7, 1, NULL},     /* for control only */
+    {"active", ARRAY_DEV_ETC, 2, 7, 1, NULL},  /* for control only */
+    {"batt_fail", UI_POWER_SUPPLY_ETC, 3, 1, 1, NULL},
+    {"bpf", UI_POWER_SUPPLY_ETC, 3, 0, 1, NULL},
+    {"bypa", DEVICE_ETC, 3, 3, 1, "bypass port A"},
+    {"bypa", ARRAY_DEV_ETC, 3, 3, 1, "bypass port A"},
+    {"bypb", DEVICE_ETC, 3, 2, 1, "bypass port B"},
+    {"bypb", ARRAY_DEV_ETC, 3, 2, 1, "bypass port B"},
+    {"conscheck", ARRAY_DEV_ETC, 1, 4, 1, "consistency check"},
+    {"ctr_link", SAS_CONNECTOR_ETC, 2, 7, 8, "connector physical link"},
+    {"ctr_type", SAS_CONNECTOR_ETC, 1, 6, 7, "connector type"},
+    {"current", CURR_SENSOR_ETC, 2, 7, 16, "current in centiamps"},
+    {"dc_fail", UI_POWER_SUPPLY_ETC, 2, 3, 1, NULL},
+    {"disable", -1, 0, 5, 1, NULL},        /* -1 is for all element types */
+    {"disable_elm", SCSI_PORT_TRAN_ETC, 3, 4, 1, "disable port/transceiver"},
+    {"disable_elm", COMM_PORT_ETC, 3, 0, 1, "disable communication port"},
+    {"devoff", DEVICE_ETC, 3, 4, 1, NULL},     /* device off */
+    {"devoff", ARRAY_DEV_ETC, 3, 4, 1, NULL},
+    {"disp_mode", DISPLAY_ETC, 1, 1, 2, NULL},
+    {"disp_char", DISPLAY_ETC, 2, 7, 16, NULL},
+    {"dnr", ARRAY_DEV_ETC, 2, 6, 1, "do not remove"},
+    {"dnr", COOLING_ETC, 1, 6, 1, "do not remove"},
+    {"dnr", DEVICE_ETC, 2, 6, 1, "do not remove"},
+    {"dnr", ENC_ELECTRONICS_ETC, 1, 5, 1, "do not remove"},
+    {"dnr", POWER_SUPPLY_ETC, 1, 6, 1, "do not remove"},
+    {"dnr", UI_POWER_SUPPLY_ETC, 3, 3, 1, "do not remove"},
+    {"enable", SCSI_IPORT_ETC, 3, 0, 1, NULL},
+    {"enable", SCSI_TPORT_ETC, 3, 0, 1, NULL},
+    {"fail", AUD_ALARM_ETC, 1, 6, 1, NULL},
+    {"fail", COMM_PORT_ETC, 1, 7, 1, NULL},
+    {"fail", COOLING_ETC, 3, 6, 1, NULL},
+    {"fail", CURR_SENSOR_ETC, 3, 6, 1, NULL},
+    {"fail", DISPLAY_ETC, 1, 6, 1, NULL},
+    {"fail", DOOR_ETC, 1, 6, 1, NULL},
+    {"fail", ENC_ELECTRONICS_ETC, 1, 6, 1, NULL},
+    {"fail", KEY_PAD_ETC, 1, 6, 1, NULL},
+    {"fail", NV_CACHE_ETC, 3, 6, 1, NULL},
+    {"fail", POWER_SUPPLY_ETC, 3, 6, 1, NULL},
+    {"fail", SAS_CONNECTOR_ETC, 3, 6, 1, NULL},
+    {"fail", SAS_EXPANDER_ETC, 1, 6, 1, NULL},
+    {"fail", SCC_CELECTR_ETC, 3, 6, 1, NULL},
+    {"fail", SCSI_IPORT_ETC, 1, 6, 1, NULL},
+    {"fail", SCSI_PORT_TRAN_ETC, 1, 6, 1, NULL},
+    {"fail", SCSI_TPORT_ETC, 1, 6, 1, NULL},
+    {"fail", SIMPLE_SUBENC_ETC, 1, 6, 1, NULL},
+    {"fail", TEMPERATURE_ETC, 3, 6, 1, NULL},
+    {"fail", UI_POWER_SUPPLY_ETC, 3, 6, 1, NULL},
+    {"fail", VOLT_SENSOR_ETC, 1, 6, 1, NULL},
+    {"failure_ind", ENCLOSURE_ETC, 2, 1, 1, NULL},
+    {"failure", ENCLOSURE_ETC, 3, 1, 1, NULL},
+    {"fault", DEVICE_ETC, 3, 5, 1, NULL},
+    {"fault", ARRAY_DEV_ETC, 3, 5, 1, NULL},
+    {"hotspare", ARRAY_DEV_ETC, 1, 5, 1, NULL},
+    {"hotswap", COOLING_ETC, 3, 7, 1, NULL},
+    {"hotswap", ENC_ELECTRONICS_ETC, 3, 7, 1, NULL},
+    {"ident", DEVICE_ETC, 2, 1, 1, "flash LED"},
+    {"ident", ARRAY_DEV_ETC, 2, 1, 1, "flash LED"},
+    {"ident", POWER_SUPPLY_ETC, 1, 7, 1, "flash LED"},
+    {"ident", COMM_PORT_ETC, 1, 7, 1, "flash LED"},
+    {"ident", COOLING_ETC, 1, 7, 1, "flash LED"},
+    {"ident", CURR_SENSOR_ETC, 1, 7, 1, "flash LED"},
+    {"ident", DISPLAY_ETC, 1, 7, 1, "flash LED"},
+    {"ident", DOOR_ETC, 1, 7, 1, "flash LED"},
+    {"ident", ENC_ELECTRONICS_ETC, 1, 7, 1, "flash LED"},
+    {"ident", ENCLOSURE_ETC, 1, 7, 1, "flash LED"},
+    {"ident", KEY_PAD_ETC, 1, 7, 1, "flash LED"},
+    {"ident", LANGUAGE_ETC, 1, 7, 1, "flash LED"},
+    {"ident", AUD_ALARM_ETC, 1, 7, 1, NULL},
+    {"ident", NV_CACHE_ETC, 1, 7, 1, "flash LED"},
+    {"ident", SAS_CONNECTOR_ETC, 1, 7, 1, "flash LED"},
+    {"ident", SAS_EXPANDER_ETC, 1, 7, 1, "flash LED"},
+    {"ident", SCC_CELECTR_ETC, 1, 7, 1, "flash LED"},
+    {"ident", SCSI_IPORT_ETC, 1, 7, 1, "flash LED"},
+    {"ident", SCSI_PORT_TRAN_ETC, 1, 7, 1, "flash LED"},
+    {"ident", SCSI_TPORT_ETC, 1, 7, 1, "flash LED"},
+    {"ident", SIMPLE_SUBENC_ETC, 1, 7, 1, "flash LED"},
+    {"ident", TEMPERATURE_ETC, 1, 7, 1, "flash LED"},
+    {"ident", UI_POWER_SUPPLY_ETC, 3, 7, 1, "flash LED"},
+    {"ident", VOLT_SENSOR_ETC, 1, 7, 1, "flash LED"},
+    {"incritarray", ARRAY_DEV_ETC, 1, 3, 1, NULL},
+    {"infailedarray", ARRAY_DEV_ETC, 1, 2, 1, NULL},
+    {"info", AUD_ALARM_ETC, 3, 3, 1, "emits warning tone when set"},
+    {"insert", DEVICE_ETC, 2, 3, 1, NULL},
+    {"insert", ARRAY_DEV_ETC, 2, 3, 1, NULL},
+    {"intf_fail", UI_POWER_SUPPLY_ETC, 2, 0, 1, NULL},
+    {"language", LANGUAGE_ETC, 2, 7, 16, "language code"},
+    {"locate", DEVICE_ETC, 2, 1, 1, "flash LED"},
+    {"locate", ARRAY_DEV_ETC, 2, 1, 1, "flash LED"},
+    {"locate", POWER_SUPPLY_ETC, 1, 7, 1, "flash LED"},
+    {"locate", COMM_PORT_ETC, 1, 7, 1, "flash LED"},
+    {"locate", COOLING_ETC, 1, 7, 1, "flash LED"},
+    {"locate", CURR_SENSOR_ETC, 1, 7, 1, "flash LED"},
+    {"locate", DISPLAY_ETC, 1, 7, 1, "flash LED"},
+    {"locate", DOOR_ETC, 1, 7, 1, "flash LED"},
+    {"locate", ENC_ELECTRONICS_ETC, 1, 7, 1, "flash LED"},
+    {"locate", ENCLOSURE_ETC, 1, 7, 1, "flash LED"},
+    {"locate", KEY_PAD_ETC, 1, 7, 1, "flash LED"},
+    {"locate", LANGUAGE_ETC, 1, 7, 1, "flash LED"},
+    {"locate", AUD_ALARM_ETC, 1, 7, 1, NULL},
+    {"locate", NV_CACHE_ETC, 1, 7, 1, "flash LED"},
+    {"locate", SAS_CONNECTOR_ETC, 1, 7, 1, "flash LED"},
+    {"locate", SAS_EXPANDER_ETC, 1, 7, 1, "flash LED"},
+    {"locate", SCC_CELECTR_ETC, 1, 7, 1, "flash LED"},
+    {"locate", SCSI_IPORT_ETC, 1, 7, 1, "flash LED"},
+    {"locate", SCSI_PORT_TRAN_ETC, 1, 7, 1, "flash LED"},
+    {"locate", SCSI_TPORT_ETC, 1, 7, 1, "flash LED"},
+    {"locate", SIMPLE_SUBENC_ETC, 1, 7, 1, "flash LED"},
+    {"locate", TEMPERATURE_ETC, 1, 7, 1, "flash LED"},
+    {"locate", UI_POWER_SUPPLY_ETC, 3, 7, 1, "flash LED"},
+    {"locate", VOLT_SENSOR_ETC, 1, 7, 1, "flash LED"},
+    {"lol", SCSI_PORT_TRAN_ETC, 3, 1, 1, "Loss of Link"},
+    {"mated", SAS_CONNECTOR_ETC, 3, 7, 1, NULL},
+    {"missing", DEVICE_ETC, 2, 4, 1, NULL},
+    {"missing", ARRAY_DEV_ETC, 2, 4, 1, NULL},
+    {"mute", AUD_ALARM_ETC, 3, 6, 1, "control only: mute the alarm"},
+    {"muted", AUD_ALARM_ETC, 3, 6, 1, "status only: alarm is muted"},
+    {"off", POWER_SUPPLY_ETC, 3, 4, 1, "Not providing power"},
+    {"off", COOLING_ETC, 3, 4, 1, "Not providing cooling"},
+    {"ok", ARRAY_DEV_ETC, 1, 7, 1, NULL},
+    {"on", COOLING_ETC, 3, 5, 1, NULL},
+    {"on", POWER_SUPPLY_ETC, 3, 5, 1, "0: turn (remain) off; 1: turn on"},
+    {"open", DOOR_ETC, 3, 1, 1, NULL},
+    {"overcurrent", CURR_SENSOR_ETC, 1, 1, 1, "overcurrent"},
+    {"overcurrent", POWER_SUPPLY_ETC, 2, 1, 1, "DC overcurrent"},
+    {"overcurrent", SAS_CONNECTOR_ETC, 3, 5, 1, NULL},  /* added ses3r07 */
+    {"overcurrent_warn", CURR_SENSOR_ETC, 1, 3, 1, "overcurrent warning"},
+    {"overtemp_fail", TEMPERATURE_ETC, 3, 3, 1, "Overtemperature failure"},
+    {"overtemp_warn", TEMPERATURE_ETC, 3, 2, 1, "Overtemperature warning"},
+    {"overvoltage", POWER_SUPPLY_ETC, 2, 3, 1, "DC overvoltage"},
+    {"overvoltage", VOLT_SENSOR_ETC, 1, 1, 1, "overvoltage"},
+    {"overvoltage_warn", POWER_SUPPLY_ETC, 1, 3, 1, "DC overvoltage warning"},
+    {"remind", AUD_ALARM_ETC, 3, 4, 1, NULL},
+    {"report", ENC_ELECTRONICS_ETC, 2, 0, 1, NULL},
+    {"report", SCC_CELECTR_ETC, 2, 0, 1, NULL},
+    {"report", SCSI_IPORT_ETC, 2, 0, 1, NULL},
+    {"report", SCSI_TPORT_ETC, 2, 0, 1, NULL},
+    {"rqst_mute", AUD_ALARM_ETC, 3, 7, 1,
+     "status only: alarm was manually muted"},
+    {"pow_cycle", ENCLOSURE_ETC, 2, 7, 2,
+     "0: no; 1: start in pow_c_delay minutes; 2: cancel"},
+    {"pow_c_delay", ENCLOSURE_ETC, 2, 5, 6,
+     "delay in minutes before starting power cycle"},
+    {"pow_c_duration", ENCLOSURE_ETC, 3, 7, 6, NULL},
+    {"pow_c_time", ENCLOSURE_ETC, 2, 7, 6,
+     "time in minutes remaining until starting power cycle"},
+    {"prdfail", -1, 0, 6, 1, "predict failure"},
+    {"rebuildremap", ARRAY_DEV_ETC, 1, 1, 1, NULL},
+    {"remove", DEVICE_ETC, 2, 2, 1, NULL},
+    {"remove", ARRAY_DEV_ETC, 2, 2, 1, NULL},
+    {"rrabort", ARRAY_DEV_ETC, 1, 0, 1, "rebuild/remap abort"},
+    {"rsvddevice", ARRAY_DEV_ETC, 1, 6, 1, "reserved device"},
+    {"select_element", ENC_ELECTRONICS_ETC, 2, 0, 1, NULL},
+    {"short_stat", SIMPLE_SUBENC_ETC, 3, 7, 8, "short enclosure status"},
+    {"size", NV_CACHE_ETC, 2, 7, 16, NULL},
+    {"speed_act", COOLING_ETC, 1, 2, 11, "actual speed (rpm / 10)"},
+    {"speed_code", COOLING_ETC, 3, 2, 3,
+     "0: leave; 1: lowest... 7: highest"},
+    {"size_mult", NV_CACHE_ETC, 1, 1, 2, NULL},
+    {"swap", -1, 0, 4, 1, NULL},               /* Reset swap */
+    {"unlock", DOOR_ETC, 3, 0, 1, NULL},
+    {"undertemp_fail", TEMPERATURE_ETC, 3, 1, 1, "Undertemperature failure"},
+    {"undertemp_warn", TEMPERATURE_ETC, 3, 0, 1, "Undertemperature warning"},
+    {"undervoltage", POWER_SUPPLY_ETC, 2, 2, 1, "DC undervoltage"},
+    {"undervoltage", VOLT_SENSOR_ETC, 1, 0, 1, "undervoltage"},
+    {"undervoltage_warn", POWER_SUPPLY_ETC, 1, 2, 1,
+     "DC undervoltage warning"},
+    {"ups_fail", UI_POWER_SUPPLY_ETC, 2, 2, 1, NULL},
+    {"urgency", AUD_ALARM_ETC, 3, 3, 4, NULL},
+    {"voltage", VOLT_SENSOR_ETC, 2, 7, 16, "voltage in centivolts"},
+    {"warning", UI_POWER_SUPPLY_ETC, 2, 1, 1, NULL},
+    {"warning", ENCLOSURE_ETC, 3, 0, 1, NULL},
+    {"warning_ind", ENCLOSURE_ETC, 2, 0, 1, NULL},
+    {"xmit_fail", SCSI_PORT_TRAN_ETC, 3, 0, 1, "Transmitter failure"},
+    {NULL, 0, 0, 0, 0, NULL},
 };
 
 /* These are for the Threshold in/out diagnostic page */
 static struct acronym2tuple th_a2t_arr[] = {
-   {"high_crit", -1, 0, 7, 8},
-   {"high_warn", -1, 1, 7, 8},
-   {"low_crit", -1, 2, 7, 8},
-   {"low_warn", -1, 3, 7, 8},
-   {NULL, 0, 0, 0, 0},
+    {"high_crit", -1, 0, 7, 8, NULL},
+    {"high_warn", -1, 1, 7, 8, NULL},
+    {"low_crit", -1, 2, 7, 8, NULL},
+    {"low_warn", -1, 3, 7, 8, NULL},
+    {NULL, 0, 0, 0, 0, NULL},
 };
 
-/* These are for the Additional element status diagnostic page for SAS
- * with the EIP bit set. First phy only. */
+/* These are for the Additional element status diagnostic page for SAS with
+ * the EIP bit set. First phy only. Index from start of AES descriptor */
 static struct acronym2tuple ae_sas_a2t_arr[] = {
-   {"at_sas_addr", -1, 12, 7, 64},      /* best viewed with --hex --get= */
-   {"dev_type", -1, 8, 6, 3},
-   {"phy_id", -1, 28, 7, 8},
-   {"sas_addr", -1, 20, 7, 64}, /* from end device's POV, often a disk */
-   {"sata_dev", -1, 11, 0, 1},
-   {"sata_port_sel", -1, 11, 7, 1},
-   {"smp_init", -1, 10, 1, 1},
-   {"smp_targ", -1, 11, 1, 1},
-   {"ssp_init", -1, 10, 3, 1},
-   {"ssp_targ", -1, 11, 3, 1},
-   {"stp_init", -1, 10, 2, 1},
-   {"stp_targ", -1, 11, 2, 1},
-   {NULL, 0, 0, 0, 0},
+    {"at_sas_addr", -1, 12, 7, 64, NULL},  /* best viewed with --hex --get= */
+        /* typically this is the expander's SAS address */
+    {"dev_type", -1, 8, 6, 3, "1: SAS/SATA dev, 2: expander"},
+    {"dsn", -1, 7, 7, 8, "device slot number (255: none)"},
+    {"num_phys", -1, 4, 7, 8, "number of phys"},
+    {"phy_id", -1, 28, 7, 8, NULL},
+    {"sas_addr", -1, 20, 7, 64, NULL},  /* should be disk or tape ... */
+    {"sata_dev", -1, 11, 0, 1, NULL},
+    {"sata_port_sel", -1, 11, 7, 1, NULL},
+    {"smp_init", -1, 10, 1, 1, NULL},
+    {"smp_targ", -1, 11, 1, 1, NULL},
+    {"ssp_init", -1, 10, 3, 1, NULL},
+    {"ssp_targ", -1, 11, 3, 1, NULL},
+    {"stp_init", -1, 10, 2, 1, NULL},
+    {"stp_targ", -1, 11, 2, 1, NULL},
+    {NULL, 0, 0, 0, 0, NULL},
 };
 
 /* Boolean array of element types of interest to the Additional Element
@@ -473,6 +621,7 @@ static struct option long_options[] = {
     {"data", required_argument, 0, 'd'},
     {"descriptor", required_argument, 0, 'D'},
     {"dev-slot-num", required_argument, 0, 'x'},
+    {"dsn", required_argument, 0, 'x'},
     {"eiioe", required_argument, 0, 'E'},
     {"enumerate", no_argument, 0, 'e'},
     {"filter", no_argument, 0, 'f'},
@@ -485,6 +634,7 @@ static struct option long_options[] = {
     {"list", no_argument, 0, 'l'},
     {"nickid", required_argument, 0, 'N'},
     {"nickname", required_argument, 0, 'n'},
+    {"mask", required_argument, 0, 'M'},
     {"maxlen", required_argument, 0, 'm'},
     {"page", required_argument, 0, 'p'},
     {"raw", no_argument, 0, 'r'},
@@ -497,6 +647,39 @@ static struct option long_options[] = {
     {0, 0, 0, 0},
 };
 
+/* For overzealous SES device servers that don't like some status elements
+ * sent back as control elements. This table is as per ses3r06. */
+static uint8_t ses3_element_cmask_arr[NUM_ETC][4] = {
+                                /* Element type code (ETC) names; comment */
+    {0x40, 0xff, 0xff, 0xff},   /* [0] unspecified */
+    {0x40, 0, 0x4e, 0x3c},      /* DEVICE */
+    {0x40, 0x80, 0, 0x60},      /* POWER_SUPPLY */
+    {0x40, 0x80, 0, 0x60},      /* COOLING; requested speed as is unless */
+    {0x40, 0xc0, 0, 0},         /* TEMPERATURE */
+    {0x40, 0xc0, 0, 0x1},       /* DOOR */
+    {0x40, 0xc0, 0, 0x5f},      /* AUD_ALARM */
+    {0x40, 0xc0, 0x1, 0},       /* ENC_ELECTRONICS */
+    {0x40, 0xc0, 0, 0},         /* SCC_CELECTR */
+    {0x40, 0xc0, 0, 0},         /* NV_CACHE */
+    {0x40, 0, 0, 0},            /* [10] INV_OP_REASON */
+    {0x40, 0, 0, 0xc0},         /* UI_POWER_SUPPLY */
+    {0x40, 0xc0, 0xff, 0xff},   /* DISPLAY */
+    {0x40, 0xc3, 0, 0},         /* KEY_PAD */
+    {0x40, 0x80, 0, 0xff},      /* ENCLOSURE */
+    {0x40, 0xc0, 0, 0x10},      /* SCSI_PORT_TRAN */
+    {0x40, 0x80, 0xff, 0xff},   /* LANGUAGE */
+    {0x40, 0xc0, 0, 0x1},       /* COMM_PORT */
+    {0x40, 0xc0, 0, 0},         /* VOLT_SENSOR */
+    {0x40, 0xc0, 0, 0},         /* CURR_SENSOR */
+    {0x40, 0xc0, 0, 0x1},       /* [20] SCSI_TPORT */
+    {0x40, 0xc0, 0, 0x1},       /* SCSI_IPORT */
+    {0x40, 0xc0, 0, 0},         /* SIMPLE_SUBENC */
+    {0x40, 0xff, 0x4e, 0x3c},   /* ARRAY */
+    {0x40, 0xc0, 0, 0},         /* SAS_EXPANDER */
+    {0x40, 0x80, 0, 0x40},      /* SAS_CONNECTOR */
+};
+
+
 static int read_hex(const char * inp, unsigned char * arr, int * arr_len,
                     int verb);
 static int strcase_eq(const char * s1p, const char * s2p);
@@ -504,56 +687,37 @@ static void enumerate_diag_pages(void);
 static int saddr_non_zero(const unsigned char * ucp);
 
 
-#ifdef __GNUC__
-static int pr2serr(const char * fmt, ...)
-        __attribute__ ((format (printf, 1, 2)));
-#else
-static int pr2serr(const char * fmt, ...);
-#endif
-
-static int
-pr2serr(const char * fmt, ...)
-{
-    va_list args;
-    int n;
-
-    va_start(args, fmt);
-    n = vfprintf(stderr, fmt, args);
-    va_end(args);
-    return n;
-}
-
-
 static void
 usage(int help_num)
 {
     if (1 == help_num) {
-        pr2serr("Usage: "
-            "sg_ses [--byte1=B1] [--clear=STR] [--control] [--data=H,H...]\n"
-            "              [--descriptor=DN] [--dev-slot-num=SN] "
+        pr2serr(
+            "Usage: sg_ses [--descriptor=DN] [--dev-slot-num=SN] "
             "[--eiioe=A_F]\n"
-            "              [--enumerate] [--filter] [--get=STR] [--help] "
-            "[--hex]\n"
-            "              [--index=IIA | =TIA,II] [--inner-hex] "
-            "[--join] [--list]\n"
-            "              [--maxlen=LEN] [--nickname=SEN] [--nickid=SEID] "
+            "              [--filter] [--get=STR] [--hex] "
+            "[--index=IIA | =TIA,II]\n"
+            "              [--inner-hex] [--join] [--maxlen=LEN] "
             "[--page=PG]\n"
-            "              [--raw] [--sas-addr=SA] [--set=STR] [--status] "
+            "              [--raw] [--sas-addr=SA] [--status] [--verbose] "
+            "[--warn]\n"
+            "              DEVICE\n\n"
+            "       sg_ses [--byte1=B1] [--clear=STR] [--control] "
+            "[--data=H,H...]\n"
+            "              [--descriptor=DN] [--dev-slot-num=SN] "
+            "[--index=IIA | =TIA,II]\n"
+            "              [--mask] [--maxlen=LEN] [--nickname=SEN] "
+            "[--nickid=SEID]\n"
+            "              [--page=PG] [--sas-addr=SA] [--set=STR] "
             "[--verbose]\n"
-            "              [--version] DEVICE\n"
+            "              DEVICE\n\n"
+            "       sg_ses [--enumerate] [--help] [--list] [--version]\n\n"
             "  where the main options are:\n"
             "    --clear=STR|-C STR    clear field by acronym or position\n"
-            "    --descriptor=DN|-D DN    descriptor name, indexing method\n"
-            "    --dev-slot-num=SN|-x SN    device slot number, indexing "
-            "method\n"
-            "    --eiioe=A_F|-E A_F    where A_F is either 'auto' or 'force'."
-            "'force'\n"
-            "                          acts as if EIIOE is set, 'auto' tries "
-            "to guess\n"
-            "    --enumerate|-e      enumerate page names + element types "
-            "(ignore\n"
-            "                        DEVICE). Use twice for clear,get,set "
-            "acronyms\n"
+            "    --control|-c        send control information (def: fetch "
+            "status)\n"
+            "    --descriptor=DN|-D DN    descriptor name (for indexing)\n"
+            "    --dev-slot-num=SN|--dsn=SN|-x SN    device slot number "
+            "(for indexing)\n"
             "    --filter|-f         filter out enclosure status flags that "
             "are clear\n"
             "                        use twice for status=okay entries "
@@ -582,29 +746,42 @@ usage(int help_num)
             "or number)\n"
             "                        (def: 'ssp' [0x0] (supported diagnostic "
             "pages))\n"
-            "    --sas-addr=SA|-A SA    SAS address in hex, indexing "
-            "method\n"
+            "    --sas-addr=SA|-A SA    SAS address in hex (for indexing)\n"
             "    --set=STR|-S STR    set value of field by acronym or "
-            "position\n\n"
-            "Fetches status or sends control data to a SCSI enclosure. Use "
-            "'-hh' for\nmore help, including the options not shown here.\n");
+            "position\n"
+            "    --status|-s         fetch status information (default "
+            "action)\n\n"
+            "First usage above is for fetching pages or fields from a SCSI "
+            "enclosure.\nThe second usage is for changing a page or field in "
+            "an enclosure. Use\n'-hh' for more help, including the options "
+            "not explained above.\n");
     } else {    /* for '-hh' or '--help --help' */
         pr2serr(
             "  where the remaining sg_ses options are:\n"
             "    --byte1=B1|-b B1    byte 1 (2nd byte) of control page set "
             "to B1\n"
-            "    --control|-c        send control information (def: fetch "
-            "status)\n"
             "    --data=H,H...|-d H,H...    string of ASCII hex bytes for "
             "control pages\n"
             "    --data=- | -d -     fetch string of ASCII hex bytes from "
             "stdin\n"
             "    --data=@FN | -d @FN    fetch string of ASCII hex bytes from "
             "file: FN\n"
+            "    --eiioe=A_F|-E A_F    where A_F is either 'auto' or 'force'."
+            "'force'\n"
+            "                          acts as if EIIOE is set, 'auto' tries "
+            "to guess\n"
+            "    --enumerate|-e      enumerate page names + element types "
+            "(ignore\n"
+            "                        DEVICE). Use twice for clear,get,set "
+            "acronyms\n"
             "    --hex|-H            print page response (or field) in hex\n"
             "    --inner-hex|-i      print innermost level of a"
             " status page in hex\n"
             "    --list|-l           same as '--enumerate' option\n"
+            "    --mask|-M           ignore status element mask in modify "
+            "actions\n"
+            "                        (e.g.--set= and --clear=) (def: apply "
+            "mask)\n"
             "    --maxlen=LEN|-m LEN    max response length (allocation "
             "length in cdb)\n"
             "    --nickname=SEN|-n SEN   SEN is new subenclosure nickname\n"
@@ -618,23 +795,22 @@ usage(int help_num)
             "to stdout\n"
             "    --readonly|-R       open DEVICE read-only (def: "
             "read-write)\n"
-            "    --status|-s         fetch status information (default "
-            "action)\n"
             "    --verbose|-v        increase verbosity\n"
-            "    --version|-V        print version string and exit\n\n"
+            "    --version|-V        print version string and exit\n"
+            "    --warn|-w           warn about join (and other) issues\n\n"
             "If no options are given then DEVICE's supported diagnostic "
-            "pages are\noutput. STR can be '<acronym>[=val]' or\n"
-            "'<start_byte>:<start_bit>[:<num_bits>][=<val>]'. Element "
-            "type\nabbreviations may be followed by a number (e.g. 'ps1' "
-            "is the second\npower supply element type).\n\n"
+            "pages are\nlisted. STR can be '<start_byte>:<start_bit>"
+            "[:<num_bits>][=<val>]'\nor '<acronym>[=val]'. Element type "
+            "abbreviations may be followed by a\nnumber (e.g. 'ps1' is "
+            "the second power supply element type). Use\n'sg_ses -e' and "
+            "'sg_ses -ee' for more information.\n\n"
             );
         pr2serr(
             "Low level indexing can be done with one of the two '--index=' "
             "options.\nAlternatively, medium level indexing can be done "
             "with either the\n'--descriptor=', 'dev-slot-num=' or "
             "'--sas-addr=' options. Support for\nthe medium level options "
-            "in the SES device is itself optional. The\nmedium level "
-            "options implicitly set '--join'.\n"
+            "in the SES device is itself optional.\n"
             );
     }
 }
@@ -726,9 +902,11 @@ parse_index(struct opts_t *op)
         if (NULL == cp)
             op->ind_indiv = -1;
     } else { /* element type abbreviation perhaps followed by <num> */
+        int blen = strlen(b);
+
         for (etp = element_type_arr; etp->desc; ++etp) {
             n = strlen(etp->abbrev);
-            if (0 == strncmp(b, etp->abbrev, n))
+            if ((n == blen) && (0 == strncmp(b, etp->abbrev, n)))
                 break;
         }
         if (NULL == etp->desc) {
@@ -775,8 +953,8 @@ cl_process(struct opts_t *op, int argc, char *argv[])
     while (1) {
         int option_index = 0;
 
-        c = getopt_long(argc, argv, "A:b:cC:d:D:eE:fG:hHiI:jln:N:m:p:rRsS:v"
-                        "Vx:", long_options, &option_index);
+        c = getopt_long(argc, argv, "A:b:cC:d:D:eE:fG:hHiI:jln:N:m:Mp:rRsS:v"
+                        "Vwx:", long_options, &option_index);
         if (c == -1)
             break;
 
@@ -823,7 +1001,7 @@ cl_process(struct opts_t *op, int argc, char *argv[])
             op->desc_name = optarg;
             break;
         case 'e':
-            ++op->do_enumerate;
+            ++op->enumerate;
             break;
         case 'E':
             if (0 == strcmp("auto", optarg))
@@ -881,6 +1059,9 @@ cl_process(struct opts_t *op, int argc, char *argv[])
                 return SG_LIB_SYNTAX_ERROR;
             }
             break;
+        case 'M':
+            ++op->mask_ign;
+            break;
         case 'p':
             if (isdigit(optarg[0])) {
                 op->page_code = sg_get_num(optarg);
@@ -926,6 +1107,9 @@ cl_process(struct opts_t *op, int argc, char *argv[])
         case 'V':
             ++op->do_version;
             return 0;
+        case 'w':
+            ++op->warn;
+            break;
         case 'x':
             op->dev_slot_num = sg_get_num(optarg);
             if ((op->dev_slot_num < 0) || (op->dev_slot_num > 255)) {
@@ -1005,7 +1189,7 @@ cl_process(struct opts_t *op, int argc, char *argv[])
                 pr2serr("assume --page=2 (es) option is set\n");
         }
     }
-    if (op->do_list || op->do_enumerate)
+    if (op->do_list || op->enumerate)
         return 0;
     if (op->do_control && op->do_status) {
         pr2serr("cannot have both '--control' and '--status'\n");
@@ -1290,7 +1474,7 @@ do_rec_diag(int sg_fd, int page_code, unsigned char * rsp_buff,
     res = sg_ll_receive_diag(sg_fd, 1 /* pcv */, page_code, rsp_buff,
                              rsp_buff_size, 1, op->verbose);
     if (0 == res) {
-        rsp_len = (rsp_buff[2] << 8) + rsp_buff[3] + 4;
+        rsp_len = sg_get_unaligned_be16(rsp_buff + 2) + 4;
         if (rsp_len > rsp_buff_size) {
             if (rsp_buff_size > 8) /* tried to get more than header */
                 pr2serr("<<< warning response buffer too small [%d but need "
@@ -1342,7 +1526,7 @@ static void
 ses_configuration_sdg(const unsigned char * resp, int resp_len)
 {
     int j, k, el, num_subs, sum_elem_types;
-    unsigned int gen_code;
+    uint32_t gen_code;
     const unsigned char * ucp;
     const unsigned char * last_ucp;
     const unsigned char * text_ucp;
@@ -1356,9 +1540,8 @@ ses_configuration_sdg(const unsigned char * resp, int resp_len)
     last_ucp = resp + resp_len - 1;
     printf("  number of secondary subenclosures: %d\n",
             num_subs - 1);
-    gen_code = (resp[4] << 24) | (resp[5] << 16) |
-               (resp[6] << 8) | resp[7];
-    printf("  generation code: 0x%x\n", gen_code);
+    gen_code = sg_get_unaligned_be32(resp + 4);
+    printf("  generation code: 0x%" PRIx32 "\n", gen_code);
     printf("  enclosure descriptor list\n");
     ucp = resp + 8;
     for (k = 0; k < num_subs; ++k, ucp += el) {
@@ -1367,7 +1550,7 @@ ses_configuration_sdg(const unsigned char * resp, int resp_len)
         el = ucp[3] + 4;
         sum_elem_types += ucp[2];
         printf("    Subenclosure identifier: %d%s\n", ucp[1],
-               (ucp[1] ? "" : " (primary)"));
+               (ucp[1] ? "" : " [primary]"));
         printf("      relative ES process id: %d, number of ES processes"
                ": %d\n", ((ucp[0] & 0x70) >> 4), (ucp[0] & 0x7));
         printf("      number of type descriptor headers: %d\n", ucp[2]);
@@ -1419,27 +1602,27 @@ truncated:
  * if there is a problem */
 static int
 populate_type_desc_hdr_arr(int fd, struct type_desc_hdr_t * tdhp,
-                           unsigned int * generationp,
+                           uint32_t * generationp,
                            struct enclosure_info * primary_ip,
                            struct opts_t * op)
 {
     int resp_len, k, el, num_subs, sum_type_dheaders, res, n;
     int ret = 0;
-    unsigned int gen_code;
+    uint32_t gen_code;
     unsigned char * resp;
     const unsigned char * ucp;
     const unsigned char * last_ucp;
 
     resp = (unsigned char *)calloc(op->maxlen, 1);
     if (NULL == resp) {
-        pr2serr("populate: unable to allocate %d bytes on heap\n",
+        pr2serr("%s: unable to allocate %d bytes on heap\n", __func__,
                 op->maxlen);
         ret = -1;
         goto the_end;
     }
     res = do_rec_diag(fd, DPC_CONFIGURATION, resp, op->maxlen, op, &resp_len);
     if (res) {
-        pr2serr("populate: couldn't read config page, res=%d\n", res);
+        pr2serr("%s: couldn't read config page, res=%d\n", __func__, res);
         ret = -1;
         goto the_end;
     }
@@ -1450,8 +1633,7 @@ populate_type_desc_hdr_arr(int fd, struct type_desc_hdr_t * tdhp,
     num_subs = resp[1] + 1;
     sum_type_dheaders = 0;
     last_ucp = resp + resp_len - 1;
-    gen_code = (resp[4] << 24) | (resp[5] << 16) |
-               (resp[6] << 8) | resp[7];
+    gen_code = sg_get_unaligned_be32(resp + 4);
     if (generationp)
         *generationp = gen_code;
     ucp = resp + 8;
@@ -1461,7 +1643,7 @@ populate_type_desc_hdr_arr(int fd, struct type_desc_hdr_t * tdhp,
         el = ucp[3] + 4;
         sum_type_dheaders += ucp[2];
         if (el < 40) {
-            pr2serr("populate: short enc descriptor len=%d ??\n", el);
+            pr2serr("%s: short enc descriptor len=%d ??\n", __func__, el);
             continue;
         }
         if ((0 == k) && primary_ip) {
@@ -1478,7 +1660,7 @@ populate_type_desc_hdr_arr(int fd, struct type_desc_hdr_t * tdhp,
         if ((ucp + 3) > last_ucp)
             goto p_truncated;
         if (k >= MX_ELEM_HDR) {
-            pr2serr("populate: too many elements\n");
+            pr2serr("%s: too many elements\n", __func__);
             ret = -1;
             goto the_end;
         }
@@ -1501,10 +1683,10 @@ populate_type_desc_hdr_arr(int fd, struct type_desc_hdr_t * tdhp,
             op->ind_th = k;
         else {
             if (op->ind_et_inst)
-                pr2serr("populate: unable to find element type '%s%d'\n",
+                pr2serr("%s: unable to find element type '%s%d'\n", __func__,
                         op->ind_etp->abbrev, op->ind_et_inst);
             else
-                pr2serr("populate: unable to find element type '%s'\n",
+                pr2serr("%s: unable to find element type '%s'\n", __func__,
                         op->ind_etp->abbrev);
             ret = -1;
             goto the_end;
@@ -1514,7 +1696,7 @@ populate_type_desc_hdr_arr(int fd, struct type_desc_hdr_t * tdhp,
     goto the_end;
 
 p_truncated:
-    pr2serr("populate: config too short\n");
+    pr2serr("%s: config too short\n", __func__);
     ret = -1;
 
 the_end:
@@ -1602,10 +1784,27 @@ find_sas_connector_type(int conn_type, char * buff, int buff_len)
         snprintf(buff, buff_len, "Micro SAS/SATA plug (SFF-8486) "
                  "[max 2 phys]");
         break;
+    case 0x28:
+        snprintf(buff, buff_len, "12 Gb/s SAS drive backplane receptacle "
+                 "(SFF-8680) [max 2 phys]");
+        break;
+    case 0x29:
+        snprintf(buff, buff_len, "12 Gb/s SAS drive plug (SFF-8680) [max 2 "
+                 "phys]");
+        break;
+    case 0x2a:
+        snprintf(buff, buff_len, "Multifunction 12 Gb/s 6x unshielded "
+                 "receptacle (SFF-8639)");
+        break;
+    case 0x2b:
+        snprintf(buff, buff_len, "Multifunction 12 Gb/s 6x unshielded plug "
+                 "(SFF-8639)");
+        break;
     case 0x2f:
         snprintf(buff, buff_len, "SAS virtual connector [max 1 phy]");
         break;
-    case 0x3f: snprintf(buff, buff_len, "Vendor specific internal connector");
+    case 0x3f:
+        snprintf(buff, buff_len, "Vendor specific internal connector");
         break;
     default:
         if (conn_type < 0x10)
@@ -1702,10 +1901,12 @@ enc_status_helper(const char * pad, const unsigned char * statp, int etype,
             printf("%sDevice bypassed B=%d\n", pad, !!(statp[3] & 0x1));
         break;
     case POWER_SUPPLY_ETC:
-        if (nofilter || ((0x80 & statp[1]) || (0xe & statp[2])))
-            printf("%sIdent=%d, DC overvoltage=%d, DC undervoltage=%d, DC "
-                   "overcurrent=%d\n", pad, !!(statp[1] & 0x80),
-                   !!(statp[2] & 0x8), !!(statp[2] & 0x4), !!(statp[2] & 0x2));
+        if (nofilter || ((0xc0 & statp[1]) || (0xe & statp[2])))
+            printf("%sIdent=%d, Do not remove=%d, DC overvoltage=%d, "
+                   "DC undervoltage=%d\n", pad, !!(statp[1] & 0x80),
+                   !!(statp[1] & 0x40), !!(statp[2] & 0x8),
+                   !!(statp[2] & 0x4));
+            printf("%s DC overcurrent=%d\n", pad, !!(statp[2] & 0x2));
         if (nofilter || (0xf8 & statp[3]))
             printf("%sHot swap=%d, Fail=%d, Requested on=%d, Off=%d, "
                    "Overtmp fail=%d\n", pad, !!(statp[3] & 0x80),
@@ -1718,12 +1919,12 @@ enc_status_helper(const char * pad, const unsigned char * statp, int etype,
         break;
     case COOLING_ETC:
         if (nofilter || ((0xc0 & statp[1]) || (0xf0 & statp[3])))
-            printf("%sIdent=%d, Hot swap=%d, Fail=%d, Requested on=%d, "
-                   "Off=%d\n", pad, !!(statp[1] & 0x80), !!(statp[3] & 0x80),
-                   !!(statp[3] & 0x40), !!(statp[3] & 0x20),
-                   !!(statp[3] & 0x10));
-        printf("%sActual speed=%d rpm, Fan %s\n", pad,
-               (((0x7 & statp[1]) << 8) + statp[2]) * 10,
+            printf("%sIdent=%d, Do not remove=%d, Hot swap=%d, Fail=%d, "
+                   "Requested on=%d\n", pad, !!(statp[1] & 0x80),
+                   !!(statp[1] & 0x40), !!(statp[3] & 0x80),
+                   !!(statp[3] & 0x40), !!(statp[3] & 0x20));
+        printf("%sOff=%d, Actual speed=%d rpm, Fan %s\n", pad,
+               !!(statp[3] & 0x10), (((0x7 & statp[1]) << 8) + statp[2]) * 10,
                actual_speed_desc[7 & statp[3]]);
         break;
     case TEMPERATURE_ETC:     /* temperature sensor */
@@ -1757,11 +1958,12 @@ enc_status_helper(const char * pad, const unsigned char * statp, int etype,
                    "Unrecov=%d\n", pad, !!(statp[3] & 0x8), !!(statp[3] & 0x4),
                    !!(statp[3] & 0x2), !!(statp[3] & 0x1));
         break;
-    case ESC_ELECTRONICS_ETC: /* enclosure services controller electronics */
-        if (nofilter || (0xc0 & statp[1]) || (0x1 & statp[2]) ||
+    case ENC_ELECTRONICS_ETC: /* enclosure services controller electronics */
+        if (nofilter || (0xe0 & statp[1]) || (0x1 & statp[2]) ||
             (0x80 & statp[3]))
-            printf("%sIdent=%d, Fail=%d, Report=%d, Hot swap=%d\n", pad,
-                   !!(statp[1] & 0x80), !!(statp[1] & 0x40),
+            printf("%sIdent=%d, Fail=%d, Do not remove=%d, Report=%d, "
+                   "Hot swap=%d\n", pad, !!(statp[1] & 0x80),
+                   !!(statp[1] & 0x40), !!(statp[1] & 0x20),
                    !!(statp[2] & 0x1), !!(statp[3] & 0x80));
         break;
     case SCC_CELECTR_ETC:     /* SCC controller electronics */
@@ -1771,7 +1973,7 @@ enc_status_helper(const char * pad, const unsigned char * statp, int etype,
                    !!(statp[2] & 0x1));
         break;
     case NV_CACHE_ETC:     /* Non volatile cache */
-        res = (statp[2] << 8) + statp[3];
+        res = sg_get_unaligned_be16(statp + 2);
         printf("%sIdent=%d, Fail=%d, Size multiplier=%d, Non volatile cache "
                "size=0x%x\n", pad, !!(statp[1] & 0x80), !!(statp[1] & 0x40),
                (statp[1] & 0x3), res);
@@ -1787,7 +1989,7 @@ enc_status_helper(const char * pad, const unsigned char * statp, int etype,
             break;
         case 1:
             printf("%sByte offset=%d, bit number=%d\n", pad,
-                   (statp[2] << 8) + statp[3], (statp[1] & 7));
+                   sg_get_unaligned_be16(statp + 2), (statp[1] & 7));
             break;
         case 2:
         case 3:
@@ -1810,21 +2012,31 @@ enc_status_helper(const char * pad, const unsigned char * statp, int etype,
                    "%d\n", pad, !!(statp[2] & 0x80), !!(statp[2] & 0x40),
                    !!(statp[2] & 0x20), !!(statp[2] & 0x10),
                    !!(statp[2] & 0x8));
-        if (nofilter || ((0x7 & statp[2]) || (0xc3 & statp[3]))) {
+        if (nofilter || ((0x7 & statp[2]) || (0xe3 & statp[3]))) {
             printf("%sUPS fail=%d, Warn=%d, Intf fail=%d, Ident=%d, Fail=%d, "
-                   "Batt fail=%d\n", pad, !!(statp[2] & 0x4),
+                   "Do not remove=%d\n", pad, !!(statp[2] & 0x4),
                    !!(statp[2] & 0x2), !!(statp[2] & 0x1),
                    !!(statp[3] & 0x80), !!(statp[3] & 0x40),
-                   !!(statp[3] & 0x2));
-            printf("%sBPF=%d\n", pad, !!(statp[3] & 0x1));
+                   !!(statp[3] & 0x20));
+            printf("%sBatt fail=%d, BPF=%d\n", pad, !!(statp[3] & 0x2),
+                   !!(statp[3] & 0x1));
         }
         break;
     case DISPLAY_ETC:   /* Display (ses2r15) */
-        if (nofilter || (0xc0 & statp[1]))
-            printf("%sIdent=%d, Fail=%d, Display mode status=%d, Display "
-                   "character status=0x%x\n", pad, !!(statp[1] & 0x80),
-                   !!(statp[1] & 0x40), (statp[1] & 0x3),
-                   ((statp[2] << 8) & statp[3]));
+        if (nofilter || (0xc0 & statp[1])) {
+            int dms = statp[1] & 0x3;
+            uint16_t dcs;
+
+            printf("%sIdent=%d, Fail=%d, Display mode status=%d", pad,
+                   !!(statp[1] & 0x80), !!(statp[1] & 0x40), dms);
+            if ((1 == dms) || (2 == dms)) {
+                dcs = sg_get_unaligned_be16(statp + 2);
+                printf(", Display character status=0x%x", dcs);
+                if (statp[2] && (0 == statp[3]))
+                    printf(" ['%c']", statp[2]);
+            }
+            printf("\n");
+        }
         break;
     case KEY_PAD_ETC:   /* Key pad entry */
         if (nofilter || (0xc0 & statp[1]))
@@ -1840,7 +2052,7 @@ enc_status_helper(const char * pad, const unsigned char * statp, int etype,
         b = ((statp[3] >> 2) & 0x3f);
         if (nofilter || (0x1 & statp[2]) || a || b)
             printf("%sWarning indication=%d, Requested power off "
-                   "duration=%d\n", pad, !!(statp[2] & 0x2), b);
+                   "duration=%d\n", pad, !!(statp[2] & 0x1), b);
         if (nofilter || (0x3 & statp[3]))
             printf("%sFailure requested=%d, Warning requested=%d\n",
                    pad, !!(statp[3] & 0x2), !!(statp[3] & 0x1));
@@ -1874,10 +2086,10 @@ enc_status_helper(const char * pad, const unsigned char * statp, int etype,
         }
 #ifdef SG_LIB_MINGW
         printf("%sVoltage: %g volts\n", pad,
-               ((int)(short)((statp[2] << 8) + statp[3]) / 100.0));
+               ((int)(short)sg_get_unaligned_be16(statp + 2) / 100.0));
 #else
         printf("%sVoltage: %.2f volts\n", pad,
-               ((int)(short)((statp[2] << 8) + statp[3]) / 100.0));
+               ((int)(short)sg_get_unaligned_be16(statp + 2) / 100.0));
 #endif
         break;
     case CURR_SENSOR_ETC:   /* Current sensor */
@@ -1887,10 +2099,10 @@ enc_status_helper(const char * pad, const unsigned char * statp, int etype,
                     !!(statp[1] & 0x8), !!(statp[1] & 0x2));
 #ifdef SG_LIB_MINGW
         printf("%sCurrent: %g amps\n", pad,
-               ((int)(short)((statp[2] << 8) + statp[3]) / 100.0));
+               ((int)(short)sg_get_unaligned_be16(statp + 2) / 100.0));
 #else
         printf("%sCurrent: %.2f amps\n", pad,
-               ((int)(short)((statp[2] << 8) + statp[3]) / 100.0));
+               ((int)(short)sg_get_unaligned_be16(statp + 2) / 100.0));
 #endif
         break;
     case SCSI_TPORT_ETC:   /* SCSI target port */
@@ -1945,11 +2157,12 @@ enc_status_helper(const char * pad, const unsigned char * statp, int etype,
         printf("%sIdent=%d, Fail=%d\n", pad, !!(statp[1] & 0x80),
                !!(statp[1] & 0x40));
         break;
-    case SAS_CONNECTOR_ETC:
+    case SAS_CONNECTOR_ETC:     /* OC (overcurrent) added in ses3r07 */
         printf("%sIdent=%d, %s\n", pad, !!(statp[1] & 0x80),
                find_sas_connector_type((statp[1] & 0x7f), bb, sizeof(bb)));
-        printf("%sConnector physical link=0x%x, Fail=%d\n", pad, statp[2],
-               !!(statp[3] & 0x40));
+        printf("%sConnector physical link=0x%x, Mated=%d, Fail=%d, OC=%d\n",
+               pad, statp[2], !!(statp[3] & 0x80), !!(statp[3] & 0x40),
+               !!(statp[3] & 0x20));
         break;
     default:
         if (etype < 0x80)
@@ -1967,11 +2180,11 @@ enc_status_helper(const char * pad, const unsigned char * statp, int etype,
  * Display enclosure status diagnostic page. */
 static void
 ses_enc_status_dp(const struct type_desc_hdr_t * tdhp, int num_telems,
-                  unsigned int ref_gen_code, const unsigned char * resp,
+                  uint32_t ref_gen_code, const unsigned char * resp,
                   int resp_len, const struct opts_t * op)
 {
     int j, k, elem_ind, match_ind_th, got1;
-    unsigned int gen_code;
+    uint32_t gen_code;
     const unsigned char * ucp;
     const unsigned char * last_ucp;
     char b[64];
@@ -1985,8 +2198,7 @@ ses_enc_status_dp(const struct type_desc_hdr_t * tdhp, int num_telems,
     last_ucp = resp + resp_len - 1;
     if (resp_len < 8)
         goto truncated;
-    gen_code = (resp[4] << 24) | (resp[5] << 16) |
-               (resp[6] << 8) | resp[7];
+    gen_code = sg_get_unaligned_be32(resp + 4);
     printf("  generation code: 0x%x\n", gen_code);
     if (ref_gen_code != gen_code) {
         pr2serr("  <<state of enclosure changed, please try again>>\n");
@@ -2104,11 +2316,11 @@ ses_threshold_helper(const char * pad, const unsigned char *tp, int etype,
 /* DPC_THRESHOLD [0x5] */
 static void
 ses_threshold_sdg(const struct type_desc_hdr_t * tdhp, int num_telems,
-                  unsigned int ref_gen_code, const unsigned char * resp,
+                  uint32_t ref_gen_code, const unsigned char * resp,
                   int resp_len, const struct opts_t * op)
 {
     int j, k, elem_ind, match_ind_th, got1;
-    unsigned int gen_code;
+    uint32_t gen_code;
     const unsigned char * ucp;
     const unsigned char * last_ucp;
     char b[64];
@@ -2120,9 +2332,8 @@ ses_threshold_sdg(const struct type_desc_hdr_t * tdhp, int num_telems,
     last_ucp = resp + resp_len - 1;
     if (resp_len < 8)
         goto truncated;
-    gen_code = (resp[4] << 24) | (resp[5] << 16) |
-               (resp[6] << 8) | resp[7];
-    printf("  generation code: 0x%x\n", gen_code);
+    gen_code = sg_get_unaligned_be32(resp + 4);
+    printf("  generation code: 0x%" PRIx32 "\n", gen_code);
     if (ref_gen_code != gen_code) {
         pr2serr("  <<state of enclosure changed, please try again>>\n");
         return;
@@ -2167,11 +2378,11 @@ truncated:
  * elements. */
 static void
 ses_element_desc_sdg(const struct type_desc_hdr_t * tdhp, int num_telems,
-                     unsigned int ref_gen_code, const unsigned char * resp,
+                     uint32_t ref_gen_code, const unsigned char * resp,
                      int resp_len, const struct opts_t * op)
 {
     int j, k, desc_len, elem_ind, match_ind_th, got1;
-    unsigned int gen_code;
+    uint32_t gen_code;
     const unsigned char * ucp;
     const unsigned char * last_ucp;
     const struct type_desc_hdr_t * tp;
@@ -2183,19 +2394,18 @@ ses_element_desc_sdg(const struct type_desc_hdr_t * tdhp, int num_telems,
     last_ucp = resp + resp_len - 1;
     if (resp_len < 8)
         goto truncated;
-    gen_code = (resp[4] << 24) | (resp[5] << 16) |
-               (resp[6] << 8) | resp[7];
-    printf("  generation code: 0x%x\n", gen_code);
+    gen_code = sg_get_unaligned_be32(resp + 4);
+    printf("  generation code: 0x%" PRIx32 "\n", gen_code);
     if (ref_gen_code != gen_code) {
         pr2serr("  <<state of enclosure changed, please try again>>\n");
         return;
     }
-    printf("  element descriptor by type list\n");
+    printf("  element descriptor list (grouped by type):\n");
     ucp = resp + 8;
     for (k = 0, got1 = 0, tp = tdhp; k < num_telems; ++k, ++tp) {
         if ((ucp + 3) > last_ucp)
             goto truncated;
-        desc_len = (ucp[2] << 8) + ucp[3] + 4;
+        desc_len = sg_get_unaligned_be16(ucp + 2) + 4;
         match_ind_th = (op->ind_given && (k == op->ind_th));
         if ((! op->ind_given) || (match_ind_th && (-1 == op->ind_indiv))) {
             printf("    Element type: %s, subenclosure id: %d [ti=%d]\n",
@@ -2209,7 +2419,7 @@ ses_element_desc_sdg(const struct type_desc_hdr_t * tdhp, int num_telems,
         }
         for (ucp += desc_len, j = 0, elem_ind = 0; j < tp->num_elements;
              ++j, ucp += desc_len, ++elem_ind) {
-            desc_len = (ucp[2] << 8) + ucp[3] + 4;
+            desc_len = sg_get_unaligned_be16(ucp + 2) + 4;
             if (op->ind_given) {
                 if ((! match_ind_th) || (-1 == op->ind_indiv) ||
                     (elem_ind != op->ind_indiv))
@@ -2256,9 +2466,11 @@ static void
 additional_elem_helper(const char * pad, const unsigned char * ucp, int len,
                        int elem_type, const struct opts_t * op)
 {
-    int ports, phys, j, m, desc_type, eip_offset, print_sas_addr;
-    const unsigned char * per_ucp;
+    int ports, phys, j, m, desc_type, eip_offset, print_sas_addr, saddr_nz;
     int nofilter = ! op->do_filter;
+    uint16_t pcie_vid;
+    int pcie_pt, psn_valid, bdf_valid, cid_valid;
+    const unsigned char * per_ucp;
     char b[64];
 
     if (op->inner_hex) {
@@ -2302,6 +2514,8 @@ additional_elem_helper(const char * pad, const unsigned char * ucp, int len,
         if (len < (4 + eip_offset))
             break;
         desc_type = (ucp[3 + eip_offset] >> 6) & 0x3;
+        if (op->verbose > 1)
+            printf("%sdescriptor_type: %d\n", pad, desc_type);
         if (0 == desc_type) {
             phys = ucp[2 + eip_offset];
             printf("%snumber of phys: %d, not all phys: %d", pad, phys,
@@ -2312,7 +2526,7 @@ additional_elem_helper(const char * pad, const unsigned char * ucp, int len,
             per_ucp = ucp + 4 + eip_offset + eip_offset;
             for (j = 0; j < phys; ++j, per_ucp += 28) {
                 printf("%sphy index: %d\n", pad, j);
-                printf("%s  device type: %s\n", pad,
+                printf("%s  SAS device type: %s\n", pad,
                        sas_device_type[(0x70 & per_ucp[0]) >> 4]);
                 if (nofilter || (0xe & per_ucp[2]))
                     printf("%s  initiator port for:%s%s%s\n", pad,
@@ -2327,17 +2541,25 @@ additional_elem_helper(const char * pad, const unsigned char * ucp, int len,
                            ((per_ucp[3] & 2) ? " SMP" : ""),
                            ((per_ucp[3] & 1) ? " SATA_device" : ""));
                 print_sas_addr = 0;
-                if (nofilter || saddr_non_zero(per_ucp + 4)) {
+                saddr_nz = saddr_non_zero(per_ucp + 4);
+                if (nofilter || saddr_nz) {
                     ++print_sas_addr;
                     printf("%s  attached SAS address: 0x", pad);
-                    for (m = 0; m < 8; ++m)
-                        printf("%02x", per_ucp[4 + m]);
+                    if (saddr_nz) {
+                        for (m = 0; m < 8; ++m)
+                            printf("%02x", per_ucp[4 + m]);
+                    } else
+                        printf("0");
                 }
-                if (nofilter || saddr_non_zero(per_ucp + 12)) {
+                saddr_nz = saddr_non_zero(per_ucp + 12);
+                if (nofilter || saddr_nz) {
                     ++print_sas_addr;
                     printf("\n%s  SAS address: 0x", pad);
-                    for (m = 0; m < 8; ++m)
-                        printf("%02x", per_ucp[12 + m]);
+                    if (saddr_nz) {
+                        for (m = 0; m < 8; ++m)
+                            printf("%02x", per_ucp[12 + m]);
+                    } else
+                        printf("0");
                 }
                 if (print_sas_addr)
                     printf("\n%s  phy identifier: 0x%x\n", pad, per_ucp[20]);
@@ -2363,7 +2585,7 @@ additional_elem_helper(const char * pad, const unsigned char * ucp, int len,
                 }
             } else if ((SCSI_TPORT_ETC == elem_type) ||
                        (SCSI_IPORT_ETC == elem_type) ||
-                       (ESC_ELECTRONICS_ETC == elem_type)) {
+                       (ENC_ELECTRONICS_ETC == elem_type)) {
                 printf("%snumber of phys: %d\n", pad, phys);
                 per_ucp = ucp + 6 + eip_offset;
                 for (j = 0; j < phys; ++j, per_ucp += 12) {
@@ -2388,6 +2610,54 @@ additional_elem_helper(const char * pad, const unsigned char * ucp, int len,
         } else
             printf("%sunrecognised descriptor type [%d]\n", pad, desc_type);
         break;
+    case TPROTO_PCIE: /* added in ses3r08 */
+        printf("%sTransport protocol: PCIe\n", pad);
+        if (0 == eip_offset) {
+            printf("%sfor this protocol EIP must be set (it isn't)\n", pad);
+            break;
+        }
+        if (len < 6)
+            break;
+        pcie_pt = (ucp[5] >> 5) & 0x7;
+        if (1 == pcie_pt)
+            printf("%sPCIe protocol type: NVMe\n", pad);
+        else {
+            printf("%sTransport protocol: PCIe subprotocol=0x%x not "
+                   "decoded\n", pad, pcie_pt);
+            if (op->verbose)
+                dStrHex((const char *)ucp, len, 0);
+            break;
+        }
+        phys = ucp[4];
+        printf("%snumber of ports: %d, not all ports: %d", pad, phys,
+               ucp[5] & 1);
+        printf(", device slot number: %d\n", ucp[7]);
+
+        pcie_vid = sg_get_unaligned_le16(ucp + 10);
+        printf("%svendor id: 0x%" PRIx16 "%s\n", pad, pcie_vid,
+               (0xffff == pcie_vid) ? " (not reported)" : "");
+        printf("%sserial number: %.20s\n", pad, ucp + 12);
+        printf("%smodel number: %.40s\n", pad, ucp + 32);
+        per_ucp = ucp + 72;
+        for (j = 0; j < phys; ++j, per_ucp += 8) {
+            printf("%sport index: %d\n", pad, j);
+            psn_valid = !!(0x4 & per_ucp[0]);
+            bdf_valid = !!(0x2 & per_ucp[0]);
+            cid_valid = !!(0x1 & per_ucp[0]);
+            printf("%s  PSN_VALID=%d, BDF_VALID=%d, CID_VALID=%d\n", pad,
+                   psn_valid, bdf_valid, cid_valid);
+            if (cid_valid)
+                printf("%s  controller id: 0x%" PRIx16 "\n", pad,
+                       sg_get_unaligned_le16(per_ucp + 1));
+            if (bdf_valid)
+                printf("%s  bus number: 0x%x, device number: 0x%x, "
+                       "function number: 0x%x\n", pad, per_ucp[4],
+                       (per_ucp[5] >> 3) & 0x1f, 0x7 & per_ucp[5]);
+            if (psn_valid)
+                printf("%s  physical slot number: 0x%" PRIx16 "\n", pad,
+                       0x1fff & sg_get_unaligned_le16(per_ucp + 6));
+        }
+        break;
     default:
         printf("%sTransport protocol: %s not decoded\n", pad,
                sg_get_trans_proto_str((0xf & ucp[0]), sizeof(b), b));
@@ -2402,12 +2672,12 @@ additional_elem_helper(const char * pad, const unsigned char * ucp, int len,
  * to "additional" to allow for SAS expander and SATA devices */
 static void
 ses_additional_elem_sdg(const struct type_desc_hdr_t * tdhp, int num_telems,
-                        unsigned int ref_gen_code, const unsigned char * resp,
+                        uint32_t ref_gen_code, const unsigned char * resp,
                         int resp_len, const struct opts_t * op)
 {
     int j, k, desc_len, elem_type, invalid, el_num, eip, ind, match_ind_th;
     int elem_count, ei, eiioe, my_eiioe_force, num_elems, skip;
-    unsigned int gen_code;
+    uint32_t gen_code;
     const unsigned char * ucp;
     const unsigned char * last_ucp;
     const struct type_desc_hdr_t * tp;
@@ -2417,9 +2687,8 @@ ses_additional_elem_sdg(const struct type_desc_hdr_t * tdhp, int num_telems,
     if (resp_len < 4)
         goto truncated;
     last_ucp = resp + resp_len - 1;
-    gen_code = (resp[4] << 24) | (resp[5] << 16) |
-               (resp[6] << 8) | resp[7];
-    printf("  generation code: 0x%x\n", gen_code);
+    gen_code = sg_get_unaligned_be32(resp + 4);
+    printf("  generation code: 0x%" PRIx32 "\n", gen_code);
     if (ref_gen_code != gen_code) {
         pr2serr("  <<state of enclosure changed, please try again>>\n");
         return;
@@ -2511,7 +2780,7 @@ static void
 ses_subenc_help_sdg(const unsigned char * resp, int resp_len)
 {
     int k, el, num_subs;
-    unsigned int gen_code;
+    uint32_t gen_code;
     const unsigned char * ucp;
     const unsigned char * last_ucp;
 
@@ -2522,14 +2791,13 @@ ses_subenc_help_sdg(const unsigned char * resp, int resp_len)
     last_ucp = resp + resp_len - 1;
     printf("  number of secondary subenclosures: %d\n",
             num_subs - 1);
-    gen_code = (resp[4] << 24) | (resp[5] << 16) |
-               (resp[6] << 8) | resp[7];
-    printf("  generation code: 0x%x\n", gen_code);
+    gen_code = sg_get_unaligned_be32(resp + 4);
+    printf("  generation code: 0x%" PRIx32 "\n", gen_code);
     ucp = resp + 8;
     for (k = 0; k < num_subs; ++k, ucp += el) {
         if ((ucp + 3) > last_ucp)
             goto truncated;
-        el = (ucp[2] << 8) + ucp[3] + 4;
+        el = sg_get_unaligned_be16(ucp + 2) + 4;
         printf("   subenclosure identifier: %d\n", ucp[1]);
         if (el > 4)
             printf("    %.*s\n", el - 4, ucp + 4);
@@ -2547,7 +2815,7 @@ static void
 ses_subenc_string_sdg(const unsigned char * resp, int resp_len)
 {
     int k, j, el, num_subs;
-    unsigned int gen_code;
+    uint32_t gen_code;
     const unsigned char * ucp;
     const unsigned char * last_ucp;
 
@@ -2556,16 +2824,14 @@ ses_subenc_string_sdg(const unsigned char * resp, int resp_len)
         goto truncated;
     num_subs = resp[1] + 1;  /* number of subenclosures (add 1 for primary) */
     last_ucp = resp + resp_len - 1;
-    printf("  number of secondary subenclosures: %d\n",
-            num_subs - 1);
-    gen_code = (resp[4] << 24) | (resp[5] << 16) |
-               (resp[6] << 8) | resp[7];
-    printf("  generation code: 0x%x\n", gen_code);
+    printf("  number of secondary subenclosures: %d\n", num_subs - 1);
+    gen_code = sg_get_unaligned_be32(resp + 4);
+    printf("  generation code: 0x%" PRIx32 "\n", gen_code);
     ucp = resp + 8;
     for (k = 0; k < num_subs; ++k, ucp += el) {
         if ((ucp + 3) > last_ucp)
             goto truncated;
-        el = (ucp[2] << 8) + ucp[3] + 4;
+        el = sg_get_unaligned_be16(ucp + 2) + 4;
         printf("   subenclosure identifier: %d\n", ucp[1]);
         if (el > 4) {
             /* dStrHex((const char *)(ucp + 4), el - 4, 0); */
@@ -2590,7 +2856,7 @@ static void
 ses_subenc_nickname_sdg(const unsigned char * resp, int resp_len)
 {
     int k, el, num_subs;
-    unsigned int gen_code;
+    uint32_t gen_code;
     const unsigned char * ucp;
     const unsigned char * last_ucp;
 
@@ -2601,9 +2867,8 @@ ses_subenc_nickname_sdg(const unsigned char * resp, int resp_len)
     last_ucp = resp + resp_len - 1;
     printf("  number of secondary subenclosures: %d\n",
             num_subs - 1);
-    gen_code = (resp[4] << 24) | (resp[5] << 16) |
-               (resp[6] << 8) | resp[7];
-    printf("  generation code: 0x%x\n", gen_code);
+    gen_code = sg_get_unaligned_be32(resp + 4);
+    printf("  generation code: 0x%" PRIx32 "\n", gen_code);
     ucp = resp + 8;
     el = 40;
     for (k = 0; k < num_subs; ++k, ucp += el) {
@@ -2650,14 +2915,47 @@ ses_supported_pages_sdg(const char * leadin, const unsigned char * resp,
     }
 }
 
+/* An array of Download microcode status field values and descriptions */
+static struct diag_page_code mc_status_arr[] = {
+    {0x0, "No download microcode operation in progress"},
+    {0x1, "Download in progress, awaiting more"},
+    {0x2, "Download complete, updating storage"},
+    {0x3, "Updating storage with deferred microcode"},
+    {0x10, "Complete, no error, starting now"},
+    {0x11, "Complete, no error, start after hard reset or power cycle"},
+    {0x12, "Complete, no error, start after power cycle"},
+    {0x13, "Complete, no error, start after activate_mc, hard reset or "
+           "power cycle"},
+    {0x80, "Error, discarded, see additional status"},
+    {0x81, "Error, discarded, image error"},
+    {0x82, "Timeout, discarded"},
+    {0x83, "Internal error, need new microcode before reset"},
+    {0x84, "Internal error, need new microcode, reset safe"},
+    {0x85, "Unexpected activate_mc received"},
+    {0x1000, NULL},
+};
+
+static const char *
+get_mc_status(unsigned char status_val)
+{
+    const struct diag_page_code * mcsp;
+
+    for (mcsp = mc_status_arr; mcsp->desc; ++mcsp) {
+        if (status_val == mcsp->page_code)
+            return mcsp->desc;
+    }
+    return "";
+}
+
 /* DPC_DOWNLOAD_MICROCODE [0xe] */
 static void
 ses_download_code_sdg(const unsigned char * resp, int resp_len)
 {
     int k, num_subs;
-    unsigned int gen_code;
+    uint32_t gen_code;
     const unsigned char * ucp;
     const unsigned char * last_ucp;
+    const char * cp;
 
     printf("Download microcode status diagnostic page:\n");
     if (resp_len < 4)
@@ -2666,21 +2964,27 @@ ses_download_code_sdg(const unsigned char * resp, int resp_len)
     last_ucp = resp + resp_len - 1;
     printf("  number of secondary subenclosures: %d\n",
             num_subs - 1);
-    gen_code = (resp[4] << 24) | (resp[5] << 16) |
-               (resp[6] << 8) | resp[7];
-    printf("  generation code: 0x%x\n", gen_code);
+    gen_code = sg_get_unaligned_be32(resp + 4);
+    printf("  generation code: 0x%" PRIx32 "\n", gen_code);
     ucp = resp + 8;
     for (k = 0; k < num_subs; ++k, ucp += 16) {
         if ((ucp + 3) > last_ucp)
             goto truncated;
-        printf("   subenclosure identifier: %d\n", ucp[1]);
-        printf("     download microcode status: 0x%x [additional status: "
-               "0x%x]\n", ucp[2], ucp[3]);
+        cp = (0 == ucp[1]) ? " [primary]" : "";
+        printf("   subenclosure identifier: %d%s\n", ucp[1], cp);
+        cp = get_mc_status(ucp[2]);
+        if (strlen(cp) > 0) {
+            printf("     download microcode status: %s [0x%x]\n", cp, ucp[2]);
+            printf("     download microcode additional status: 0x%x\n",
+                   ucp[3]);
+        } else
+            printf("     download microcode status: 0x%x [additional "
+                   "status: 0x%x]\n", ucp[2], ucp[3]);
         printf("     download microcode maximum size: %d bytes\n",
-               (ucp[4] << 24) + (ucp[5] << 16) + (ucp[6] << 8) + ucp[7]);
+               sg_get_unaligned_be32(ucp + 4));
         printf("     download microcode expected buffer id: 0x%x\n", ucp[11]);
         printf("     download microcode expected buffer id offset: %d\n",
-               (ucp[12] << 24) + (ucp[13] << 16) + (ucp[14] << 8) + ucp[15]);
+               sg_get_unaligned_be32(ucp + 12));
     }
     return;
 truncated:
@@ -2706,16 +3010,15 @@ read_hex(const char * inp, unsigned char * arr, int * arr_len, int verb)
         return 1;
     lcp = inp;
     in_len = strlen(inp);
-    if (0 == in_len) {
+    if (0 == in_len)
         *arr_len = 0;
-    }
     if (('-' == inp[0]) || ('@' == inp[0])) {    /* read from stdin or file */
         if ('-' == inp[0])
             fp = stdin;
         else {
             fp = fopen(inp + 1, "r");
             if (NULL == fp) {
-                pr2serr("read_hex: unable to open file: %s\n", inp + 1);
+                pr2serr("%s: unable to open file: %s\n", __func__, inp + 1);
                 return 1;
             }
         }
@@ -2744,8 +3047,8 @@ read_hex(const char * inp, unsigned char * arr, int * arr_len, int verb)
                     if (1 == sscanf(carry_over, "%x", &h))
                         arr[off - 1] = h;       /* back up and overwrite */
                     else {
-                        pr2serr("read_hex: carry_over error ['%s'] around "
-                                "line %d\n", carry_over, j + 1);
+                        pr2serr("%s: carry_over error ['%s'] around line "
+                                "%d\n", __func__, carry_over, j + 1);
                         goto err_with_fp;
                     }
                     lcp = line + 1;
@@ -2764,15 +3067,15 @@ read_hex(const char * inp, unsigned char * arr, int * arr_len, int verb)
                 continue;
             k = strspn(lcp, "0123456789aAbBcCdDeEfF ,\t");
             if (in_len != k) {
-                pr2serr("read_hex: syntax error at line %d, pos %d\n", j + 1,
-                        m + k + 1);
+                pr2serr("%s: syntax error at line %d, pos %d\n", __func__,
+                        j + 1, m + k + 1);
                 goto err_with_fp;
             }
             for (k = 0; k < (MX_DATA_IN - off); ++k) {
                 if (1 == sscanf(lcp, "%x", &h)) {
                     if (h > 0xff) {
-                        pr2serr("read_hex: hex number larger than 0xff in "
-                                "line %d, pos %d\n", j + 1,
+                        pr2serr("%s: hex number larger than 0xff in line %d, "
+                                "pos %d\n", __func__, j + 1,
                                 (int)(lcp - line + 1));
                         goto err_with_fp;
                     }
@@ -2788,8 +3091,8 @@ read_hex(const char * inp, unsigned char * arr, int * arr_len, int verb)
                     if ('\0' == *lcp)
                         break;
                 } else {
-                    pr2serr("read_hex: error in line %d, at pos %d\n", j + 1,
-                            (int)(lcp - line + 1));
+                    pr2serr("%s: error in line %d, at pos %d\n", __func__,
+                            j + 1, (int)(lcp - line + 1));
                     goto err_with_fp;
                 }
             }
@@ -2801,15 +3104,15 @@ read_hex(const char * inp, unsigned char * arr, int * arr_len, int verb)
     } else {        /* hex string on command line */
         k = strspn(inp, "0123456789aAbBcCdDeEfF, ");
         if (in_len != k) {
-            pr2serr("read_hex: error at pos %d\n", k + 1);
-            return 1;
+            pr2serr("%s: error at pos %d\n", __func__, k + 1);
+            goto err_with_fp;
         }
         for (k = 0; k < MX_DATA_IN; ++k) {
             if (1 == sscanf(lcp, "%x", &h)) {
                 if (h > 0xff) {
-                    pr2serr("read_hex: hex number larger than 0xff at pos "
-                            "%d\n", (int)(lcp - inp + 1));
-                    return 1;
+                    pr2serr("%s: hex number larger than 0xff at pos %d\n",
+                            __func__, (int)(lcp - inp + 1));
+                    goto err_with_fp;
                 }
                 arr[k] = h;
                 cp = (char *)strchr(lcp, ',');
@@ -2822,8 +3125,9 @@ read_hex(const char * inp, unsigned char * arr, int * arr_len, int verb)
                     cp = c2p;
                 lcp = cp + 1;
             } else {
-                pr2serr("read_hex: error at pos %d\n", (int)(lcp - inp + 1));
-                return 1;
+                pr2serr("%s: error at pos %d\n", __func__,
+                        (int)(lcp - inp + 1));
+                goto err_with_fp;
             }
         }
         *arr_len = k + 1;
@@ -2846,14 +3150,14 @@ ses_process_status_page(int sg_fd, struct opts_t * op)
 {
     int j, resp_len, res;
     int ret = 0;
-    unsigned int ref_gen_code;
+    uint32_t ref_gen_code;
     unsigned char *  resp;
     const char * cp;
     struct enclosure_info primary_info;
 
     resp = (unsigned char *)calloc(op->maxlen, 1);
     if (NULL == resp) {
-        pr2serr("process_status_page: unable to allocate %d bytes on heap\n",
+        pr2serr("%s: unable to allocate %d bytes on heap\n", __func__,
                 op->maxlen);
         ret = -1;
         goto fini;
@@ -2871,12 +3175,16 @@ ses_process_status_page(int sg_fd, struct opts_t * op)
             dStrRaw((const char *)resp, resp_len);
         }
     } else if (op->do_hex) {
-        if (cp)
-            printf("Response in hex from diagnostic page: %s\n", cp);
-        else
-            printf("Response in hex from unknown diagnostic page "
-                   "[0x%x]\n", op->page_code);
-        dStrHex((const char *)resp, resp_len, 0);
+        if (op->do_hex > 2)
+            dStrHex((const char *)resp, resp_len, -1);
+         else {
+            if (cp)
+                printf("Response in hex from diagnostic page: %s\n", cp);
+            else
+                printf("Response in hex from unknown diagnostic page "
+                       "[0x%x]\n", op->page_code);
+            dStrHex((const char *)resp, resp_len, (2 == op->do_hex));
+        }
     } else {
         memset(&primary_info, 0, sizeof(primary_info));
         switch (op->page_code) {
@@ -2915,21 +3223,9 @@ ses_process_status_page(int sg_fd, struct opts_t * op)
         case DPC_STRING:
             printf("String In diagnostic page (for primary "
                    "subenclosure):\n");
-            if (resp_len > 4) {
-#if 1
+            if (resp_len > 4)
                 dStrHex((const char *)(resp + 4), resp_len - 4, 0);
-#else
-                int j;
-
-                printf("  ");
-                for (j = 0; j < (resp_len - 4); ++j) {
-                    if ((j > 0) && (0 == (j % 16)))
-                        printf("\n  ");
-                    printf("%02x ", *(resp + 4 + j));
-                }
-                printf("\n");
-#endif
-            } else
+            else
                 printf("  <empty>\n");
             break;
         case DPC_THRESHOLD:
@@ -3044,6 +3340,9 @@ devslotnum_and_sasaddr(struct join_row_t * jrp, unsigned char * ae_ucp)
             }
         }
         break;
+    case TPROTO_PCIE:
+        jrp->dev_slot_num = ae_ucp[7];
+        break;
     default:
         ;
     }
@@ -3056,9 +3355,9 @@ devslotnum_and_sasaddr(struct join_row_t * jrp, unsigned char * ae_ucp)
 static int
 join_work(int sg_fd, struct opts_t * op, int display)
 {
-    int k, j, res, num_t_hdrs, elem_ind, ei, get_out, desc_len, dn_len;
-    int et4aes, broken_ei, ei2, got1, jr_max_ind, eip, eiioe, mlen;
-    unsigned int ref_gen_code, gen_code;
+    int k, j, res, num_t_hdrs, elem_ind, ei, desc_len, dn_len;
+    int et4aes, broken_ei, ei2, got1, jr_max_ind, mlen;
+    uint32_t ref_gen_code, gen_code;
     struct join_row_t * jrp;
     struct join_row_t * jr2p;
     unsigned char * es_ucp;
@@ -3099,8 +3398,7 @@ join_work(int sg_fd, struct opts_t * op, int display)
         pr2serr("Enclosure Status response too short\n");
         return -1;
     }
-    gen_code = (enc_stat_rsp[4] << 24) | (enc_stat_rsp[5] << 16) |
-               (enc_stat_rsp[6] << 8) | enc_stat_rsp[7];
+    gen_code = sg_get_unaligned_be32(enc_stat_rsp + 4);
     if (ref_gen_code != gen_code) {
         pr2serr("%s", enc_state_changed);
         return -1;
@@ -3118,8 +3416,7 @@ join_work(int sg_fd, struct opts_t * op, int display)
             pr2serr("Element Descriptor response too short\n");
             return -1;
         }
-        gen_code = (elem_desc_rsp[4] << 24) | (elem_desc_rsp[5] << 16) |
-                   (elem_desc_rsp[6] << 8) | elem_desc_rsp[7];
+        gen_code = sg_get_unaligned_be32(elem_desc_rsp + 4);
         if (ref_gen_code != gen_code) {
             pr2serr("%s", enc_state_changed);
             return -1;
@@ -3146,8 +3443,7 @@ join_work(int sg_fd, struct opts_t * op, int display)
                 pr2serr("Additional Element Status response too short\n");
                 return -1;
             }
-            gen_code = (add_elem_rsp[4] << 24) | (add_elem_rsp[5] << 16) |
-                       (add_elem_rsp[6] << 8) | add_elem_rsp[7];
+            gen_code = sg_get_unaligned_be32(add_elem_rsp + 4);
             if (ref_gen_code != gen_code) {
                 pr2serr("%s", enc_state_changed);
                 return -1;
@@ -3185,8 +3481,7 @@ join_work(int sg_fd, struct opts_t * op, int display)
                 pr2serr("Threshold In response too short\n");
                 return -1;
             }
-            gen_code = (threshold_rsp[4] << 24) | (threshold_rsp[5] << 16) |
-                       (threshold_rsp[6] << 8) | threshold_rsp[7];
+            gen_code = sg_get_unaligned_be32(threshold_rsp + 4);
             if (ref_gen_code != gen_code) {
                 pr2serr("%s", enc_state_changed);
                 return -1;
@@ -3221,7 +3516,7 @@ join_work(int sg_fd, struct opts_t * op, int display)
         es_ucp += 4;
         jrp->elem_descp = ed_ucp;
         if (ed_ucp)
-            ed_ucp += (ed_ucp[2] << 8) + ed_ucp[3] + 4;
+            ed_ucp += sg_get_unaligned_be16(ed_ucp + 2) + 4;
         jrp->add_elem_statp = NULL;
         jrp->thresh_inp = t_ucp;
         jrp->dev_slot_num = -1;
@@ -3246,7 +3541,7 @@ join_work(int sg_fd, struct opts_t * op, int display)
             es_ucp += 4;
             jrp->elem_descp = ed_ucp;
             if (ed_ucp)
-                ed_ucp += (ed_ucp[2] << 8) + ed_ucp[3] + 4;
+                ed_ucp += sg_get_unaligned_be16(ed_ucp + 2) + 4;
             jrp->thresh_inp = t_ucp;
             jrp->dev_slot_num = -1;
             /* assume sas_addr[8] zeroed since it's static file scope */
@@ -3263,19 +3558,25 @@ join_work(int sg_fd, struct opts_t * op, int display)
 
     broken_ei = 0;
     if (ae_ucp) {
-        get_out = 0;
+        int eip, eiioe;
+        int aes_i = 0;
+        int get_out = 0;
+
         jrp = join_arr;
         tdhp = type_desc_hdr_arr;
         for (k = 0; k < num_t_hdrs; ++k, ++tdhp) {
             if (active_et_aesp(tdhp->etype)) {
+                /* only consider element types that AES element are permiited
+                 * to refer to, then loop over those number of elements */
                 for (j = 0; j < tdhp->num_elements; ++j) {
                     if ((ae_ucp + 1) > ae_last_ucp) {
                         get_out = 1;
-                        if (op->verbose)
-                            pr2serr("join_work: off end of ae page\n");
+                        if (op->verbose || op->warn)
+                            pr2serr("warning: %s: off end of ae page\n",
+                                    __func__);
                         break;
                     }
-                    eip = !!(ae_ucp[0] & 0x10);
+                    eip = !!(ae_ucp[0] & 0x10); /* element index present */
                     if (eip)
                         eiioe = op->eiioe_force ? 1 : (ae_ucp[2] & 1);
                     else
@@ -3285,13 +3586,18 @@ join_work(int sg_fd, struct opts_t * op, int display)
                         jr2p = join_arr + ei;
                         if ((ei >= jr_max_ind) || (NULL == jr2p->enc_statp)) {
                             get_out = 1;
-                            pr2serr("join_work: oi=%d, ei=%d [max_ind=%d], "
-                                    "eiioe=1 not in join_arr\n", k, ei,
+                            pr2serr("%s: oi=%d, ei=%d [max_ind=%d], eiioe=1 "
+                                    "not in join_arr\n", __func__, k, ei,
                                     jr_max_ind);
                             break;
                         }
                         devslotnum_and_sasaddr(jr2p, ae_ucp);
-                        jr2p->add_elem_statp = ae_ucp;
+                        if (jr2p->add_elem_statp) {
+                            if (op->warn || op->verbose)
+                                pr2serr("warning: aes slot busy [oi=%d, "
+                                        "ei=%d, aes_i=%d]\n", k, ei, aes_i);
+                        } else
+                            jr2p->add_elem_statp = ae_ucp;
                     } else if (eip) {     /* and EIIOE=0 */
                         ei = ae_ucp[3];
 try_again:
@@ -3306,8 +3612,9 @@ try_again:
                         }
                         if (NULL == jr2p->enc_statp) {
                             get_out = 1;
-                            pr2serr("join_work: oi=%d, ei=%d (broken_ei=%d) "
-                                    "not in join_arr\n", k, ei, broken_ei);
+                            pr2serr("warning: %s: oi=%d, ei=%d (broken_ei=%d) "
+                                    "not in join_arr\n", __func__, k, ei,
+                                    broken_ei);
                             break;
                         }
                         if (! active_et_aesp(jr2p->etype)) {
@@ -3316,28 +3623,35 @@ try_again:
                             goto try_again;
                         }
                         devslotnum_and_sasaddr(jr2p, ae_ucp);
-                        jr2p->add_elem_statp = ae_ucp;
+                        if (jr2p->add_elem_statp) {
+                            if (op->warn || op->verbose)
+                                pr2serr("warning: aes slot busy [oi=%d, "
+                                        "ei=%d, aes_i=%d]\n", k, ei, aes_i);
+                        } else
+                            jr2p->add_elem_statp = ae_ucp;
                     } else {    /* EIP=0 */
                         while (jrp->enc_statp && ((-1 == jrp->el_ind_indiv) ||
                                                   jrp->add_elem_statp))
                             ++jrp;
                         if (NULL == jrp->enc_statp) {
                             get_out = 1;
-                            pr2serr("join_work: join_arr has no space for "
-                                    "ae\n");
+                            pr2serr("warning: %s: join_arr has no space for "
+                                    "ae\n", __func__);
                             break;
                         }
                         jrp->add_elem_statp = ae_ucp;
                         ++jrp;
                     }
                     ae_ucp += ae_ucp[1] + 2;
+                    ++aes_i;
                 }
             } else {    /* element type not relevant to ae status */
                 /* step over overall and individual elements */
                 for (j = 0; j <= tdhp->num_elements; ++j, ++jrp) {
                     if (NULL == jrp->enc_statp) {
                         get_out = 1;
-                        pr2serr("join_work: join_arr has no space\n");
+                        pr2serr("warning: %s: join_arr has no space\n",
+                                __func__);
                         break;
                     }
                 }
@@ -3384,7 +3698,11 @@ try_again:
         if (op->desc_name) {
             if (NULL == ed_ucp)
                 continue;
-            desc_len = (ed_ucp[2] << 8) + ed_ucp[3];
+            desc_len = sg_get_unaligned_be16(ed_ucp + 2);
+            /* some element descriptor strings have trailing NULLs and
+             * count them in their length; adjust */
+            while (desc_len && ('\0' == ed_ucp[4 + desc_len - 1]))
+                --desc_len;
             if (desc_len != dn_len)
                 continue;
             if (0 != strncmp(op->desc_name, (const char *)(ed_ucp + 4),
@@ -3406,7 +3724,7 @@ try_again:
             continue;   /* when '-ff' and status!=OK, skip */
         cp = find_element_tname(jrp->etype, b, sizeof(b));
         if (ed_ucp) {
-            desc_len = (ed_ucp[2] << 8) + ed_ucp[3] + 4;
+            desc_len = sg_get_unaligned_be16(ed_ucp + 2) + 4;
             if (desc_len > 4)
                 printf("%.*s [%d,%d]  Element type: %s\n", desc_len - 4,
                        (const char *)(ed_ucp + 4), jrp->el_ind_th,
@@ -3520,37 +3838,37 @@ strcase_eq(const char * s1p, const char * s2p)
 static int
 is_acronym_in_status_ctl(const struct tuple_acronym_val * tavp)
 {
-    const struct acronym2tuple * a2tp;
+    const struct acronym2tuple * ap;
 
-    for (a2tp = ecs_a2t_arr; a2tp->acron; ++ a2tp) {
-        if (strcase_eq(tavp->acron, a2tp->acron))
+    for (ap = ecs_a2t_arr; ap->acron; ++ ap) {
+        if (strcase_eq(tavp->acron, ap->acron))
             break;
     }
-    return (a2tp->acron ? 1 : 0);
+    return (ap->acron ? 1 : 0);
 }
 
 static int
 is_acronym_in_threshold(const struct tuple_acronym_val * tavp)
 {
-    const struct acronym2tuple * a2tp;
+    const struct acronym2tuple * ap;
 
-    for (a2tp = th_a2t_arr; a2tp->acron; ++ a2tp) {
-        if (strcase_eq(tavp->acron, a2tp->acron))
+    for (ap = th_a2t_arr; ap->acron; ++ ap) {
+        if (strcase_eq(tavp->acron, ap->acron))
             break;
     }
-    return (a2tp->acron ? 1 : 0);
+    return (ap->acron ? 1 : 0);
 }
 
 static int
 is_acronym_in_additional(const struct tuple_acronym_val * tavp)
 {
-    const struct acronym2tuple * a2tp;
+    const struct acronym2tuple * ap;
 
-    for (a2tp = ae_sas_a2t_arr; a2tp->acron; ++ a2tp) {
-        if (strcase_eq(tavp->acron, a2tp->acron))
+    for (ap = ae_sas_a2t_arr; ap->acron; ++ ap) {
+        if (strcase_eq(tavp->acron, ap->acron))
             break;
     }
-    return (a2tp->acron ? 1 : 0);
+    return (ap->acron ? 1 : 0);
 }
 
 /* DPC_ENC_STATUS  DPC_ENC_CONTROL
@@ -3561,9 +3879,9 @@ cgs_enc_ctl_stat(int sg_fd, const struct join_row_t * jrp,
                  const struct tuple_acronym_val * tavp,
                  const struct opts_t * op)
 {
-    int ret, len, s_byte, s_bit, n_bits;
+    int ret, len, s_byte, s_bit, n_bits, k;
     uint64_t ui;
-    const struct acronym2tuple * a2tp;
+    const struct acronym2tuple * ap;
 
     if (NULL == tavp->acron) {
         s_byte = tavp->start_byte;
@@ -3571,17 +3889,27 @@ cgs_enc_ctl_stat(int sg_fd, const struct join_row_t * jrp,
         n_bits = tavp->num_bits;
     }
     if (tavp->acron) {
-        for (a2tp = ecs_a2t_arr; a2tp->acron; ++ a2tp) {
-            if (((jrp->etype == a2tp->etype) || (-1 == a2tp->etype)) &&
-                strcase_eq(tavp->acron, a2tp->acron))
+        for (ap = ecs_a2t_arr; ap->acron; ++ ap) {
+            if (((jrp->etype == ap->etype) || (-1 == ap->etype)) &&
+                strcase_eq(tavp->acron, ap->acron))
                 break;
         }
-        if (a2tp->acron) {
-            s_byte = a2tp->start_byte;
-            s_bit = a2tp->start_bit;
-            n_bits = a2tp->num_bits;
-        } else
+        if (ap->acron) {
+            s_byte = ap->start_byte;
+            s_bit = ap->start_bit;
+            n_bits = ap->num_bits;
+        } else {
+            if (-1 != ap->etype) {
+                for (ap = ecs_a2t_arr; ap->acron; ++ap) {
+                    if (0 == strcase_eq(tavp->acron, ap->acron)) {
+                        pr2serr(">>> Found %s acronym but not for element "
+                                "type %d\n", tavp->acron, jrp->etype);
+                        break;
+                    }
+                }
+            }
             return -2;
+        }
     }
     if (op->verbose > 1)
         pr2serr("  s_byte=%d, s_bit=%d, n_bits=%d\n", s_byte, s_bit, n_bits);
@@ -3591,14 +3919,22 @@ cgs_enc_ctl_stat(int sg_fd, const struct join_row_t * jrp,
             printf("0x%" PRIx64 "\n", ui);
         else
             printf("%" PRId64 "\n", (int64_t)ui);
-    } else {
-        jrp->enc_statp[0] &= 0x40;  /* keep PRDFAIL bit in byte 0 */
+    } else {    /* --set or --clear */
+        if ((0 == op->mask_ign) && (jrp->etype < NUM_ETC)) {
+            if (op->verbose > 2)
+                pr2serr("Applying mask to element status [etc=%d] prior to "
+                        "modify then write\n", jrp->etype);
+            for (k = 0; k < 4; ++k)
+                jrp->enc_statp[k] &= ses3_element_cmask_arr[jrp->etype][k];
+        } else
+            jrp->enc_statp[0] &= 0x40;  /* keep PRDFAIL is set in byte 0 */
+        /* next we modify requested bit(s) */
         set_big_endian((uint64_t)tavp->val,
                        jrp->enc_statp + s_byte, s_bit, n_bits);
         jrp->enc_statp[0] |= 0x80;  /* set SELECT bit */
         if (op->byte1_given)
             enc_stat_rsp[1] = op->byte1;
-        len = (enc_stat_rsp[2] << 8) + enc_stat_rsp[3] + 4;
+        len = sg_get_unaligned_be16(enc_stat_rsp + 2) + 4;
         ret = do_senddiag(sg_fd, 1, enc_stat_rsp, len, 1, op->verbose);
         if (ret) {
             pr2serr("couldn't send Enclosure Control page\n");
@@ -3618,7 +3954,7 @@ cgs_threshold(int sg_fd, const struct join_row_t * jrp,
 {
     int ret, len, s_byte, s_bit, n_bits;
     uint64_t ui;
-    const struct acronym2tuple * a2tp;
+    const struct acronym2tuple * ap;
 
     if (NULL == jrp->thresh_inp) {
         pr2serr("No Threshold In/Out element available\n");
@@ -3630,15 +3966,15 @@ cgs_threshold(int sg_fd, const struct join_row_t * jrp,
         n_bits = tavp->num_bits;
     }
     if (tavp->acron) {
-        for (a2tp = th_a2t_arr; a2tp->acron; ++ a2tp) {
-            if (((jrp->etype == a2tp->etype) || (-1 == a2tp->etype)) &&
-                strcase_eq(tavp->acron, a2tp->acron))
+        for (ap = th_a2t_arr; ap->acron; ++ap) {
+            if (((jrp->etype == ap->etype) || (-1 == ap->etype)) &&
+                strcase_eq(tavp->acron, ap->acron))
                 break;
         }
-        if (a2tp->acron) {
-            s_byte = a2tp->start_byte;
-            s_bit = a2tp->start_bit;
-            n_bits = a2tp->num_bits;
+        if (ap->acron) {
+            s_byte = ap->start_byte;
+            s_bit = ap->start_bit;
+            n_bits = ap->num_bits;
         } else
             return -2;
     }
@@ -3653,7 +3989,7 @@ cgs_threshold(int sg_fd, const struct join_row_t * jrp,
                        jrp->thresh_inp + s_byte, s_bit, n_bits);
         if (op->byte1_given)
             threshold_rsp[1] = op->byte1;
-        len = (threshold_rsp[2] << 8) + threshold_rsp[3] + 4;
+        len = sg_get_unaligned_be16(threshold_rsp + 2) + 4;
         ret = do_senddiag(sg_fd, 1, threshold_rsp, len, 1, op->verbose);
         if (ret) {
             pr2serr("couldn't send Threshold Out page\n");
@@ -3673,7 +4009,7 @@ cgs_additional_el(const struct join_row_t * jrp,
 {
     int s_byte, s_bit, n_bits;
     uint64_t ui;
-    const struct acronym2tuple * a2tp;
+    const struct acronym2tuple * ap;
 
     if (NULL == jrp->add_elem_statp) {
         pr2serr("No additional element status element available\n");
@@ -3685,15 +4021,15 @@ cgs_additional_el(const struct join_row_t * jrp,
         n_bits = tavp->num_bits;
     }
     if (tavp->acron) {
-        for (a2tp = ae_sas_a2t_arr; a2tp->acron; ++ a2tp) {
-            if (((jrp->etype == a2tp->etype) || (-1 == a2tp->etype)) &&
-                strcase_eq(tavp->acron, a2tp->acron))
+        for (ap = ae_sas_a2t_arr; ap->acron; ++ap) {
+            if (((jrp->etype == ap->etype) || (-1 == ap->etype)) &&
+                strcase_eq(tavp->acron, ap->acron))
                 break;
         }
-        if (a2tp->acron) {
-            s_byte = a2tp->start_byte;
-            s_bit = a2tp->start_bit;
-            n_bits = a2tp->num_bits;
+        if (ap->acron) {
+            s_byte = ap->start_byte;
+            s_bit = ap->start_bit;
+            n_bits = ap->num_bits;
         } else
             return -2;
     }
@@ -3756,7 +4092,11 @@ ses_cgs(int sg_fd, const struct tuple_acronym_val * tavp,
             ed_ucp = jrp->elem_descp;
             if (NULL == ed_ucp)
                 continue;
-            desc_len = (ed_ucp[2] << 8) + ed_ucp[3];
+            desc_len = sg_get_unaligned_be16(ed_ucp + 2);
+            /* some element descriptor strings have trailing NULLs and
+             * count them; adjust */
+            while (desc_len && ('\0' == ed_ucp[4 + desc_len - 1]))
+                --desc_len;
             if (desc_len != dn_len)
                 continue;
             if (0 != strncmp(op->desc_name, (const char *)(ed_ucp + 4),
@@ -3818,25 +4158,25 @@ ses_set_nickname(int sg_fd, struct opts_t * op)
     /* Only after the generation code, offset 4 for 4 bytes */
     res = do_rec_diag(sg_fd, DPC_SUBENC_NICKNAME, b, 8, op, &resp_len);
     if (res) {
-        pr2serr("set_nickname: Subenclosure nickname status page, res=%d\n",
+        pr2serr("%s: Subenclosure nickname status page, res=%d\n", __func__,
                 res);
         return -1;
     }
     if (resp_len < 8) {
-        pr2serr("set_nickname: Subenclosure nickname status page, response "
-                "length too short: %d\n", resp_len);
+        pr2serr("%s: Subenclosure nickname status page, response length too "
+                "short: %d\n", __func__, resp_len);
         return -1;
     }
     if (op->verbose) {
-        unsigned int gc;
+        uint32_t gc;
 
-        gc = (b[4] << 24) + (b[5] << 16) + (b[6] << 8) + b[7];
-        pr2serr("set_nickname: generation code from status page: %u\n", gc);
+        gc = sg_get_unaligned_be32(b + 4);
+        pr2serr("%s: generation code from status page: %" PRIu32 "\n",
+                __func__, gc);
     }
     b[0] = (unsigned char)DPC_SUBENC_NICKNAME;  /* just in case */
     b[1] = (unsigned char)op->seid;
-    b[2] = (unsigned char)(control_plen >> 8);
-    b[3] = (unsigned char)control_plen;
+    sg_put_unaligned_be16((uint16_t)control_plen, b + 2);
     len = strlen(op->nickname_str);
     if (len > 32)
         len = 32;
@@ -3871,14 +4211,15 @@ enumerate_work(const struct opts_t * op)
 {
     int num;
     const struct element_type_t * etp;
-    const struct acronym2tuple * a2tp;
+    const struct acronym2tuple * ap;
     char b[64];
+    char a[160];
     const char * cp;
 
     if (op->dev_name)
         printf(">>> DEVICE %s ignored when --%s option given.\n",
                op->dev_name, (op->do_list ? "list" : "enumerate"));
-    num = op->do_enumerate + op->do_list;
+    num = op->enumerate + op->do_list;
     if (num < 2) {
         enumerate_diag_pages();
         printf("\nSES element type names, followed by abbreviation and "
@@ -3890,27 +4231,42 @@ enumerate_work(const struct opts_t * op)
         /* command line has multiple --enumerate and/or --list options */
         printf("--clear, --get, --set acronyms for Enclosure Status/Control "
                "['es' or 'ec'] page:\n");
-        for (a2tp = ecs_a2t_arr; a2tp->acron; ++a2tp) {
-            cp = (a2tp->etype < 0) ? "*" :
-                         find_element_tname(a2tp->etype, b, sizeof(b));
-            printf("    %s  [%s] [%d:%d:%d]\n", a2tp->acron, (cp ? cp : "??"),
-                   a2tp->start_byte, a2tp->start_bit, a2tp->num_bits);
+        for (ap = ecs_a2t_arr; ap->acron; ++ap) {
+            cp = (ap->etype < 0) ?
+                         "*" : find_element_tname(ap->etype, b, sizeof(b));
+            snprintf(a, sizeof(a), "  %s  [%s] [%d:%d:%d]", ap->acron,
+                     (cp ? cp : "??"), ap->start_byte, ap->start_bit,
+                     ap->num_bits);
+            if (ap->info)
+                printf("%-44s  %s\n", a, ap->info);
+            else
+                printf("%s\n", a);
         }
         printf("\n--clear, --get, --set acronyms for Threshold In/Out "
                "['th'] page:\n");
-        for (a2tp = th_a2t_arr; a2tp->acron; ++a2tp) {
-            cp = (a2tp->etype < 0) ? "*" :
-                         find_element_tname(a2tp->etype, b, sizeof(b));
-            printf("    %s  [%s] [%d:%d:%d]\n", a2tp->acron, (cp ? cp : "??"),
-                   a2tp->start_byte, a2tp->start_bit, a2tp->num_bits);
+        for (ap = th_a2t_arr; ap->acron; ++ap) {
+            cp = (ap->etype < 0) ? "*" :
+                         find_element_tname(ap->etype, b, sizeof(b));
+            snprintf(a, sizeof(a), "  %s  [%s] [%d:%d:%d]", ap->acron,
+                     (cp ? cp : "??"), ap->start_byte, ap->start_bit,
+                     ap->num_bits);
+            if (ap->info)
+                printf("%-34s  %s\n", a, ap->info);
+            else
+                printf("%s\n", a);
         }
         printf("\n--get acronyms for Additional Element Status ['aes'] page "
                "(SAS EIP=1):\n");
-        for (a2tp = ae_sas_a2t_arr; a2tp->acron; ++a2tp) {
-            cp = (a2tp->etype < 0) ? "*" :
-                        find_element_tname(a2tp->etype, b, sizeof(b));
-            printf("    %s  [%s] [%d:%d:%d]\n", a2tp->acron, (cp ? cp : "??"),
-                   a2tp->start_byte, a2tp->start_bit, a2tp->num_bits);
+        for (ap = ae_sas_a2t_arr; ap->acron; ++ap) {
+            cp = (ap->etype < 0) ? "*" :
+                        find_element_tname(ap->etype, b, sizeof(b));
+            snprintf(a, sizeof(a), "  %s  [%s] [%d:%d:%d]", ap->acron,
+                     (cp ? cp : "??"), ap->start_byte, ap->start_bit,
+                     ap->num_bits);
+            if (ap->info)
+                printf("%-34s  %s\n", a, ap->info);
+            else
+                printf("%s\n", a);
         }
     }
 }
@@ -3944,7 +4300,7 @@ main(int argc, char * argv[])
         usage(op->do_help);
         return 0;
     }
-    if (op->do_enumerate || op->do_list) {
+    if (op->enumerate || op->do_list) {
         enumerate_work(op);
         return 0;
     }
@@ -3999,7 +4355,7 @@ main(int argc, char * argv[])
                 safe_strerror(-sg_fd));
         return SG_LIB_FILE_ERROR;
     }
-    if (! (op->do_raw || have_cgs)) {
+    if (! (op->do_raw || have_cgs || (op->do_hex > 2))) {
         if (sg_simple_inquiry(sg_fd, &inq_resp, 1, op->verbose)) {
             pr2serr("%s doesn't respond to a SCSI INQUIRY\n", op->dev_name);
             ret = SG_LIB_CAT_OTHER;
@@ -4030,8 +4386,7 @@ main(int argc, char * argv[])
     else { /* control page requested */
         op->data_arr[0] = op->page_code;
         op->data_arr[1] = op->byte1;
-        op->data_arr[2] = (op->arr_len >> 8) & 0xff;
-        op->data_arr[3] = op->arr_len & 0xff;
+        sg_put_unaligned_be16((uint16_t)op->arr_len, op->data_arr + 2);
         switch (op->page_code) {
         case DPC_ENC_CONTROL:  /* Enclosure Control diagnostic page [0x2] */
             printf("Sending Enclosure Control [0x%x] page, with page "
@@ -4086,6 +4441,8 @@ main(int argc, char * argv[])
         case DPC_DOWNLOAD_MICROCODE: /* Download Microcode Control [0xe] */
             printf("Sending Download Microcode Control [0x%x] page, with "
                    "page length=%d bytes\n", op->page_code, op->arr_len);
+            printf("  Perhaps it would be better to use the sg_ses_microcode "
+                   "utility\n");
             ret = do_senddiag(sg_fd, 1, op->data_arr, op->arr_len + 4, 1,
                               op->verbose);
             if (ret) {

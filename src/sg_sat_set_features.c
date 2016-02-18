@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006-2014 Douglas Gilbert.
+ * Copyright (c) 2006-2016 Douglas Gilbert.
  * All rights reserved.
  * Use of this source code is governed by a BSD-style
  * license that can be found in the BSD_LICENSE file.
@@ -19,6 +19,7 @@
 #include "sg_lib.h"
 #include "sg_cmds_basic.h"
 #include "sg_cmds_extra.h"
+#include "sg_pr2serr.h"
 
 /* This program uses a ATA PASS-THROUGH SCSI command. This usage is
  * defined in the SCSI to ATA Translation (SAT) drafts and standards.
@@ -46,68 +47,71 @@
 
 #define DEF_TIMEOUT 20
 
-static const char * version_str = "1.08 20140515";
+static const char * version_str = "1.12 20160126";
 
 static struct option long_options[] = {
-        {"count", required_argument, 0, 'c'},
-        {"ck_cond", no_argument, 0, 'C'},
-        {"feature", required_argument, 0, 'f'},
-        {"help", no_argument, 0, 'h'},
-        {"len", required_argument, 0, 'l'},
-        {"lba", required_argument, 0, 'L'},
-        {"readonly", no_argument, 0, 'r'},
-        {"verbose", no_argument, 0, 'v'},
-        {"version", no_argument, 0, 'V'},
-        {0, 0, 0, 0},
+    {"count", required_argument, 0, 'c'},
+    {"ck_cond", no_argument, 0, 'C'},
+    {"extended", no_argument, 0, 'e'},
+    {"feature", required_argument, 0, 'f'},
+    {"help", no_argument, 0, 'h'},
+    {"len", required_argument, 0, 'l'},
+    {"lba", required_argument, 0, 'L'},
+    {"readonly", no_argument, 0, 'r'},
+    {"verbose", no_argument, 0, 'v'},
+    {"version", no_argument, 0, 'V'},
+    {0, 0, 0, 0},
 };
 
 
 static void
 usage()
 {
-    fprintf(stderr, "Usage: "
-          "sg_sat_set_features [--count=CO] [--ck_cond] [--feature=FEA] "
-          "[--help]\n"
-          "                           [--lba=LBA] [--len=16|12] [--readonly] "
-          "[--verbose]\n"
-          "                           [--version] DEVICE\n"
-          "  where:\n"
-          "    --count=CO | -c CO      count field contents (def: 0)\n"
-          "    --ck_cond | -C          set ck_cond field in pass-through "
-          "(def: 0)\n"
-          "    --feature=FEA|-f FEA     feature field contents\n"
-          "                             (def: 0 (which is reserved))\n"
-          "    --help | -h             output this usage message\n"
-          "    --lba=LBA | -L LBA      LBA field contents (def: 0)\n"
-          "                            meaning depends on sub-command "
-          "(feature)\n"
-          "    --len=16|12 | -l 16|12    cdb length: 16 or 12 bytes "
-          "(def: 16)\n"
-          "    --verbose | -v          increase verbosity\n"
-          "    --readonly | -r         open DEVICE read-only (def: "
-          "read-write)\n"
-          "                            recommended if DEVICE is ATA disk\n"
-          "    --version | -V          print version string and exit\n\n"
-          "Sends an ATA SET FEATURES command via a SAT pass through.\n"
-          "Primary feature code is placed in '--feature=FEA' with "
-          "'--count=CO' and\n"
-          "'--lba=LBA' being auxiliaries for some features.  The arguments "
-          "CO, FEA\n"
-          "and LBA are decimal unless prefixed by '0x' or have a trailing "
-          "'h'.\n"
-          "Example enabling write cache: 'sg_sat_set_feature --feature=2 "
-          "/dev/sdc'\n");
+    pr2serr("Usage: sg_sat_set_features [--count=CO] [--ck_cond] [--extended] "
+            "[--feature=FEA]\n"
+            "                           [--help] [--lba=LBA] [--len=16|12] "
+            "[--readonly]\n"
+            "                           [--verbose] [--version] DEVICE\n"
+            "  where:\n"
+            "    --count=CO | -c CO      count field contents (def: 0)\n"
+            "    --ck_cond | -C          set ck_cond field in pass-through "
+            "(def: 0)\n"
+            "    --extended | -e         enable extended lba values\n"
+            "    --feature=FEA|-f FEA    feature field contents\n"
+            "                            (def: 0 (which is reserved))\n"
+            "    --help | -h             output this usage message\n"
+            "    --lba=LBA | -L LBA      LBA field contents (def: 0)\n"
+            "                            meaning depends on sub-command "
+            "(feature)\n"
+            "    --len=16|12 | -l 16|12    cdb length: 16 or 12 bytes "
+            "(def: 16)\n"
+            "    --verbose | -v          increase verbosity\n"
+            "    --readonly | -r         open DEVICE read-only (def: "
+            "read-write)\n"
+            "                            recommended if DEVICE is ATA disk\n"
+            "    --version | -V          print version string and exit\n\n"
+            "Sends an ATA SET FEATURES command via a SAT pass through.\n"
+            "Primary feature code is placed in '--feature=FEA' with "
+            "'--count=CO' and\n"
+            "'--lba=LBA' being auxiliaries for some features.  The arguments "
+            "CO, FEA\n"
+            "and LBA are decimal unless prefixed by '0x' or have a trailing "
+            "'h'.\n"
+            "Example enabling write cache: 'sg_sat_set_feature --feature=2 "
+            "/dev/sdc'\n");
 }
 
 static int
-do_set_features(int sg_fd, int feature, int count, unsigned int lba,
-                int cdb_len, int ck_cond, int verbose)
+do_set_features(int sg_fd, int feature, int count, uint64_t lba,
+                int cdb_len, int ck_cond, int extend, int verbose)
 {
     int res, ret;
-    int extend = 0;
+    /* Following for ATA READ/WRITE MULTIPLE (EXT) cmds, normally 0 */
+    int multiple_count = 0;
     int protocol = 3;   /* non-data */
+    int t_type = 0;     /* 0 -> 512 byte blocks, 1 -> device's LB size */
     int t_dir = 1;      /* 0 -> to device, 1 -> from device */
-    int byte_block = 1; /* 0 -> bytes, 1 -> 512 byte blocks */
+    int byte_block = 1; /* 0 -> bytes, 1 -> 512 byte blocks (if t_type=0) */
     int t_length = 0;   /* 0 -> no data transferred, 2 -> sector count */
     int resid = 0;
     int got_ard = 0;    /* got ATA result descriptor */
@@ -134,8 +138,10 @@ do_set_features(int sg_fd, int feature, int count, unsigned int lba,
         aptCmdBlk[10] = (lba >> 8) & 0xff;
         aptCmdBlk[12] = (lba >> 16) & 0xff;
         aptCmdBlk[7] = (lba >> 24) & 0xff;
-        aptCmdBlk[1] = (protocol << 1) | extend;
-        aptCmdBlk[2] = (ck_cond << 5) | (t_dir << 3) |
+        aptCmdBlk[9] = (lba >> 32) & 0xff;
+        aptCmdBlk[11] = (lba >> 40) & 0xff;
+        aptCmdBlk[1] = (multiple_count << 5) | (protocol << 1) | extend;
+        aptCmdBlk[2] = (ck_cond << 5) | (t_type << 4)| (t_dir << 3) |
                        (byte_block << 2) | t_length;
         res = sg_ll_ata_pt(sg_fd, aptCmdBlk, cdb_len, DEF_TIMEOUT, NULL,
                            NULL /* doutp */, 0, sense_buffer,
@@ -149,8 +155,8 @@ do_set_features(int sg_fd, int feature, int count, unsigned int lba,
         apt12CmdBlk[5] = lba & 0xff;
         apt12CmdBlk[6] = (lba >> 8) & 0xff;
         apt12CmdBlk[7] = (lba >> 16) & 0xff;
-        apt12CmdBlk[1] = (protocol << 1);
-        apt12CmdBlk[2] = (ck_cond << 5) | (t_dir << 3) |
+        apt12CmdBlk[1] = (multiple_count << 5) | (protocol << 1);
+        apt12CmdBlk[2] = (ck_cond << 5) | (t_type << 4) | (t_dir << 3) |
                          (byte_block << 2) | t_length;
         res = sg_ll_ata_pt(sg_fd, apt12CmdBlk, cdb_len, DEF_TIMEOUT, NULL,
                            NULL /* doutp */, 0, sense_buffer,
@@ -159,24 +165,26 @@ do_set_features(int sg_fd, int feature, int count, unsigned int lba,
     }
     if (0 == res) {
         if (verbose > 2)
-            fprintf(stderr, "command completed with SCSI GOOD status\n");
+            pr2serr("command completed with SCSI GOOD status\n");
     } else if ((res > 0) && (res & SAM_STAT_CHECK_CONDITION)) {
-        if (verbose > 1)
-            sg_print_sense("ATA pass through", sense_buffer, sb_sz,
+        if (verbose > 1) {
+            pr2serr("ATA pass through:\n");
+            sg_print_sense(NULL, sense_buffer, sb_sz,
                            ((verbose > 2) ? 1 : 0));
+        }
         if (sg_scsi_normalize_sense(sense_buffer, sb_sz, &ssh)) {
             switch (ssh.sense_key) {
             case SPC_SK_ILLEGAL_REQUEST:
                 if ((0x20 == ssh.asc) && (0x0 == ssh.ascq)) {
                     ret = SG_LIB_CAT_INVALID_OP;
                     if (verbose < 2)
-                        fprintf(stderr, "ATA PASS-THROUGH (%d) not "
-                                "supported\n", cdb_len);
+                        pr2serr("ATA PASS-THROUGH (%d) not supported\n",
+                                cdb_len);
                 } else {
                     ret = SG_LIB_CAT_ILLEGAL_REQ;
                     if (verbose < 2)
-                        fprintf(stderr, "ATA PASS-THROUGH (%d), bad "
-                                "field in cdb\n", cdb_len);
+                        pr2serr("ATA PASS-THROUGH (%d), bad field in cdb\n",
+                                cdb_len);
                 }
                 return ret;
             case SPC_SK_NO_SENSE:
@@ -185,8 +193,8 @@ do_set_features(int sg_fd, int feature, int count, unsigned int lba,
                     (ASCQ_ATA_PT_INFO_AVAILABLE == ssh.ascq)) {
                     if (SAT_ATA_RETURN_DESC != ata_return_desc[0]) {
                         if (verbose)
-                            fprintf(stderr, "did not find ATA Return "
-                                    "(sense) Descriptor\n");
+                            pr2serr("did not find ATA Return (sense) "
+                                    "Descriptor\n");
                         return SG_LIB_CAT_RECOVERED;
                     }
                     got_ard = 1;
@@ -200,70 +208,68 @@ do_set_features(int sg_fd, int feature, int count, unsigned int lba,
                 }
             case SPC_SK_UNIT_ATTENTION:
                 if (verbose < 2)
-                    fprintf(stderr, "ATA PASS-THROUGH (%d), Unit Attention "
-                                "detected\n", cdb_len);
+                    pr2serr("ATA PASS-THROUGH (%d), Unit Attention detected\n",
+                            cdb_len);
                 return SG_LIB_CAT_UNIT_ATTENTION;
             case SPC_SK_NOT_READY:
                 if (verbose < 2)
-                    fprintf(stderr, "ATA PASS-THROUGH (%d), device not "
-                                "ready\n", cdb_len);
+                    pr2serr("ATA PASS-THROUGH (%d), device not ready\n",
+                            cdb_len);
                 return SG_LIB_CAT_NOT_READY;
             case SPC_SK_MEDIUM_ERROR:
             case SPC_SK_HARDWARE_ERROR:
                 if (verbose < 2)
-                    fprintf(stderr, "ATA PASS-THROUGH (%d), medium or "
-                            "hardware error\n", cdb_len);
+                    pr2serr("ATA PASS-THROUGH (%d), medium or hardware "
+                            "error\n", cdb_len);
                 return SG_LIB_CAT_MEDIUM_HARD;
             case SPC_SK_ABORTED_COMMAND:
                 if (0x10 == ssh.asc) {
-                    fprintf(stderr, "Aborted command: protection "
-                            "information\n");
+                    pr2serr("Aborted command: protection information\n");
                     return SG_LIB_CAT_PROTECTION;
                 } else {
-                    fprintf(stderr, "Aborted command\n");
+                    pr2serr("Aborted command\n");
                     return SG_LIB_CAT_ABORTED_COMMAND;
                 }
             case SPC_SK_DATA_PROTECT:
-                fprintf(stderr, "ATA PASS-THROUGH (%d): data protect, read "
-                            "only media?\n", cdb_len);
+                pr2serr("ATA PASS-THROUGH (%d): data protect, read only "
+                        "media?\n", cdb_len);
                 return SG_LIB_CAT_DATA_PROTECT;
             default:
                 if (verbose < 2)
-                    fprintf(stderr, "ATA PASS-THROUGH (%d), some sense "
-                            "data, use '-v' for more information\n", cdb_len);
+                    pr2serr("ATA PASS-THROUGH (%d), some sense data, use "
+                            "'-v' for more information\n", cdb_len);
                 return SG_LIB_CAT_SENSE;
             }
         } else {
-            fprintf(stderr, "CHECK CONDITION without response code ??\n");
+            pr2serr("CHECK CONDITION without response code ??\n");
             return SG_LIB_CAT_SENSE;
         }
         if (0x72 != (sense_buffer[0] & 0x7f)) {
-            fprintf(stderr, "expected descriptor sense format, response "
-                    "code=0x%x\n", sense_buffer[0]);
+            pr2serr("expected descriptor sense format, response code=0x%x\n",
+                    sense_buffer[0]);
             return SG_LIB_CAT_MALFORMED;
         }
     } else if (res > 0) {
         if (SAM_STAT_RESERVATION_CONFLICT == res) {
-            fprintf(stderr, "SCSI status: RESERVATION CONFLICT\n");
+            pr2serr("SCSI status: RESERVATION CONFLICT\n");
             return SG_LIB_CAT_RES_CONFLICT;
         } else {
-            fprintf(stderr, "Unexpected SCSI status=0x%x\n", res);
+            pr2serr("Unexpected SCSI status=0x%x\n", res);
             return SG_LIB_CAT_MALFORMED;
         }
     } else {
-        fprintf(stderr, "ATA pass through (%d) failed\n", cdb_len);
+        pr2serr("ATA pass through (%d) failed\n", cdb_len);
         if (verbose < 2)
-            fprintf(stderr, "    try adding '-v' for more information\n");
+            pr2serr("    try adding '-v' for more information\n");
         return -1;
     }
 
     if ((SAT_ATA_RETURN_DESC == ata_return_desc[0]) && (0 == got_ard))
-        fprintf(stderr, "Seem to have got ATA Result Descriptor but "
-                "it was not indicated\n");
+        pr2serr("Seem to have got ATA Result Descriptor but it was not "
+                "indicated\n");
     if (got_ard) {
         if (ata_return_desc[3] & 0x4) {
-                fprintf(stderr, "error indication in returned FIS: aborted "
-                        "command\n");
+                pr2serr("error indication in returned FIS: aborted command\n");
                 return SG_LIB_CAT_ABORTED_COMMAND;
         }
     }
@@ -274,12 +280,13 @@ do_set_features(int sg_fd, int feature, int count, unsigned int lba,
 int
 main(int argc, char * argv[])
 {
-    int sg_fd, c, k, ret, res;
+    int sg_fd, c, ret, res;
     const char * device_name = NULL;
     int count = 0;
+    int extend = 0;
     int rdonly = 0;
     int feature = 0;
-    unsigned int lba = 0;
+    uint64_t lba = 0;
     int verbose = 0;
     int ck_cond = 0;
     int cdb_len = SAT_ATA_PASS_THROUGH16_LEN;
@@ -287,7 +294,7 @@ main(int argc, char * argv[])
     while (1) {
         int option_index = 0;
 
-        c = getopt_long(argc, argv, "c:Cf:hl:L:rvV", long_options,
+        c = getopt_long(argc, argv, "c:Cef:hl:L:rvV", long_options,
                         &option_index);
         if (c == -1)
             break;
@@ -296,17 +303,20 @@ main(int argc, char * argv[])
         case 'c':
             count = sg_get_num(optarg);
             if ((count < 0) || (count > 255)) {
-                fprintf(stderr, "bad argument for '--count'\n");
+                pr2serr("bad argument for '--count'\n");
                 return SG_LIB_SYNTAX_ERROR;
             }
             break;
         case 'C':
             ck_cond = 1;
             break;
+        case 'e':
+            extend = 1;
+            break;
         case 'f':
             feature = sg_get_num(optarg);
             if ((feature < 0) || (feature > 255)) {
-                fprintf(stderr, "bad argument for '--feature'\n");
+                pr2serr("bad argument for '--feature'\n");
                 return SG_LIB_SYNTAX_ERROR;
             }
             break;
@@ -315,19 +325,20 @@ main(int argc, char * argv[])
             usage();
             return 0;
         case 'l':
-           cdb_len = sg_get_num(optarg);
-           if (! ((cdb_len == 12) || (cdb_len == 16))) {
-                fprintf(stderr, "argument to '--len' should be 12 or 16\n");
+            cdb_len = sg_get_num(optarg);
+            if (! ((cdb_len == 12) || (cdb_len == 16))) {
+                pr2serr("argument to '--len' should be 12 or 16\n");
                 return SG_LIB_SYNTAX_ERROR;
             }
             break;
-        case 'L':       /* up to 26 bits, allow for 32 bits (less -1) */
-            k = sg_get_num(optarg);
-            if (-1 == k) {
-                fprintf(stderr, "bad argument for '--lba'\n");
+        case 'L':       /* up to 32 bits, allow for 48 bits (less -1) */
+            lba = sg_get_llnum(optarg);
+            if ((uint64_t)-1 == lba) {
+                pr2serr("bad argument for '--lba'\n");
                 return SG_LIB_SYNTAX_ERROR;
             }
-            lba = (unsigned int)k;
+            if (lba > 0xffffffff)
+                extend = 1;
             break;
         case 'r':
             ++rdonly;
@@ -336,10 +347,10 @@ main(int argc, char * argv[])
             ++verbose;
             break;
         case 'V':
-            fprintf(stderr, "version: %s\n", version_str);
+            pr2serr("version: %s\n", version_str);
             return 0;
         default:
-            fprintf(stderr, "unrecognised option code 0x%x ??\n", c);
+            pr2serr("unrecognised option code 0x%x ??\n", c);
             usage();
             return SG_LIB_SYNTAX_ERROR;
         }
@@ -351,15 +362,14 @@ main(int argc, char * argv[])
         }
         if (optind < argc) {
             for (; optind < argc; ++optind)
-                fprintf(stderr, "Unexpected extra argument: %s\n",
-                        argv[optind]);
+                pr2serr("Unexpected extra argument: %s\n", argv[optind]);
             usage();
             return SG_LIB_SYNTAX_ERROR;
         }
     }
 
     if (NULL == device_name) {
-        fprintf(stderr, "missing device name!\n");
+        pr2serr("missing device name!\n");
         usage();
         return 1;
     }
@@ -367,22 +377,21 @@ main(int argc, char * argv[])
     if ((lba > 0xffffff) && (12 == cdb_len)) {
         cdb_len = 16;
         if (verbose)
-            fprintf(stderr, "Since lba > 0xffffff, forcing cdb length to "
-                    "16\n");
+            pr2serr("Since lba > 0xffffff, forcing cdb length to 16\n");
     }
 
     if ((sg_fd = sg_cmds_open_device(device_name, rdonly, verbose)) < 0) {
-        fprintf(stderr, "error opening file: %s: %s\n",
-                device_name, safe_strerror(-sg_fd));
+        pr2serr("error opening file: %s: %s\n", device_name,
+                safe_strerror(-sg_fd));
         return SG_LIB_FILE_ERROR;
     }
 
     ret = do_set_features(sg_fd, feature, count, lba, cdb_len, ck_cond,
-                          verbose);
+                          extend, verbose);
 
     res = sg_cmds_close_device(sg_fd);
     if (res < 0) {
-        fprintf(stderr, "close error: %s\n", safe_strerror(-res));
+        pr2serr("close error: %s\n", safe_strerror(-res));
         if (0 == ret)
             return SG_LIB_FILE_ERROR;
     }

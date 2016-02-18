@@ -1,7 +1,7 @@
 /*
  * (c) 2000 Kurt Garloff <garloff at suse dot de>
  * heavily based on Douglas Gilbert's sg_rbuf program.
- * (c) 1999-2008 Douglas Gilbert
+ * (c) 1999-2015 Douglas Gilbert
  *
  * Program to test the SCSI host adapter by issueing
  * write and read operations on a device's buffer
@@ -37,9 +37,11 @@
 #endif
 #include "sg_lib.h"
 #include "sg_io_linux.h"
+#include "sg_unaligned.h"
+#include "sg_pr2serr.h"
 
 
-static const char * version_str = "1.07 20130507";
+static const char * version_str = "1.09 20151220";
 
 #define BPI (signed)(sizeof(int))
 
@@ -102,10 +104,10 @@ int find_out_about_buffer (int sg_fd)
         io_hdr.timeout = 60000;     /* 60000 millisecs == 60 seconds */
 
         if (verbose) {
-                fprintf(stderr, "    read buffer [mode desc] cdb: ");
+                pr2serr("    read buffer [mode desc] cdb: ");
                 for (k = 0; k < (int)sizeof(rbCmdBlk); ++k)
-                        fprintf(stderr, "%02x ", rbCmdBlk[k]);
-                fprintf(stderr, "\n");
+                        pr2serr("%02x ", rbCmdBlk[k]);
+                pr2serr("\n");
         }
         if (ioctl(sg_fd, SG_IO, &io_hdr) < 0) {
                 perror(ME "SG_IO READ BUFFER descriptor error");
@@ -125,7 +127,7 @@ int find_out_about_buffer (int sg_fd)
                 return res;
         }
 
-        buf_capacity = ((rbBuff[1] << 16) | (rbBuff[2] << 8) | rbBuff[3]);
+        buf_capacity = sg_get_unaligned_be24(rbBuff + 1);
         buf_granul = (unsigned char)rbBuff[0];
 #if 0
         printf("READ BUFFER reports: %02x %02x %02x %02x\n",
@@ -222,9 +224,7 @@ int read_buffer (int sg_fd, unsigned size)
         if (NULL == rbBuff)
                 return -1;
         rbCmdBlk[1] = RWB_MODE_DATA;
-        rbCmdBlk[6] = 0xff & (bufSize >> 16);
-        rbCmdBlk[7] = 0xff & (bufSize >> 8);
-        rbCmdBlk[8] = 0xff & bufSize;
+        sg_put_unaligned_be24((uint32_t)bufSize, rbCmdBlk + 6);
         memset(&io_hdr, 0, sizeof(struct sg_io_hdr));
         io_hdr.interface_id = 'S';
         io_hdr.cmd_len = sizeof(rbCmdBlk);
@@ -237,10 +237,10 @@ int read_buffer (int sg_fd, unsigned size)
         io_hdr.pack_id = 2;
         io_hdr.timeout = 60000;     /* 60000 millisecs == 60 seconds */
         if (verbose) {
-                fprintf(stderr, "    read buffer [mode data] cdb: ");
+                pr2serr("    read buffer [mode data] cdb: ");
                 for (k = 0; k < (int)sizeof(rbCmdBlk); ++k)
-                        fprintf(stderr, "%02x ", rbCmdBlk[k]);
-                fprintf(stderr, "\n");
+                        pr2serr("%02x ", rbCmdBlk[k]);
+                pr2serr("\n");
         }
 
         if (ioctl(sg_fd, SG_IO, &io_hdr) < 0) {
@@ -281,9 +281,7 @@ int write_buffer (int sg_fd, unsigned size)
         memset(wbBuff, 0, bufSize);
         do_fill_buffer ((int*)wbBuff, size);
         wbCmdBlk[1] = RWB_MODE_DATA;
-        wbCmdBlk[6] = 0xff & (bufSize >> 16);
-        wbCmdBlk[7] = 0xff & (bufSize >> 8);
-        wbCmdBlk[8] = 0xff & bufSize;
+        sg_put_unaligned_be24((uint32_t)bufSize, wbCmdBlk + 6);
         memset(&io_hdr, 0, sizeof(struct sg_io_hdr));
         io_hdr.interface_id = 'S';
         io_hdr.cmd_len = sizeof(wbCmdBlk);
@@ -296,10 +294,10 @@ int write_buffer (int sg_fd, unsigned size)
         io_hdr.pack_id = 1;
         io_hdr.timeout = 60000;     /* 60000 millisecs == 60 seconds */
         if (verbose) {
-                fprintf(stderr, "    write buffer [mode data] cdb: ");
+                pr2serr("    write buffer [mode data] cdb: ");
                 for (k = 0; k < (int)sizeof(wbCmdBlk); ++k)
-                        fprintf(stderr, "%02x ", wbCmdBlk[k]);
-                fprintf(stderr, "\n");
+                        pr2serr("%02x ", wbCmdBlk[k]);
+                pr2serr("\n");
         }
 
         if (ioctl(sg_fd, SG_IO, &io_hdr) < 0) {
@@ -383,21 +381,21 @@ int main (int argc, char * argv[])
                 case 'r':
                         addread = sg_get_num(optarg);
                         if (-1 == addread) {
-                                fprintf(stderr, "bad argument to '--addrd'\n");
+                                pr2serr("bad argument to '--addrd'\n");
                                 return SG_LIB_SYNTAX_ERROR;
                         }
                         break;
                 case 's':
                         size = sg_get_num(optarg);
                         if (-1 == size) {
-                                fprintf(stderr, "bad argument to '--size'\n");
+                                pr2serr("bad argument to '--size'\n");
                                 return SG_LIB_SYNTAX_ERROR;
                         }
                         break;
                 case 't':
                         times = sg_get_num(optarg);
                         if (-1 == times) {
-                                fprintf(stderr, "bad argument to '--times'\n");
+                                pr2serr("bad argument to '--times'\n");
                                 return SG_LIB_SYNTAX_ERROR;
                         }
                         break;
@@ -405,13 +403,12 @@ int main (int argc, char * argv[])
                         verbose++;
                         break;
                 case 'V':
-                        fprintf(stderr, ME "version: %s\n",
-                                version_str);
+                        pr2serr(ME "version: %s\n", version_str);
                         return 0;
                 case 'w':
                         addwrite = sg_get_num(optarg);
                         if (-1 == addwrite) {
-                                fprintf(stderr, "bad argument to '--addwr'\n");
+                                pr2serr("bad argument to '--addwr'\n");
                                 return SG_LIB_SYNTAX_ERROR;
                         }
                         break;
@@ -430,22 +427,21 @@ int main (int argc, char * argv[])
                 if (-1 == size) {
                         size = sg_get_num(argv[optind]);
                         if (-1 == size) {
-                                fprintf(stderr, "bad <sz>\n");
+                                pr2serr("bad <sz>\n");
                                 usage();
                                 return SG_LIB_SYNTAX_ERROR;
                         }
                         if (++optind < argc) {
                                 addwrite = sg_get_num(argv[optind]);
                                 if (-1 == addwrite) {
-                                        fprintf(stderr, "bad [addwr]\n");
+                                        pr2serr("bad [addwr]\n");
                                         usage();
                                         return SG_LIB_SYNTAX_ERROR;
                                 }
                                 if (++optind < argc) {
                                         addread = sg_get_num(argv[optind]);
                                         if (-1 == addread) {
-                                                fprintf(stderr,
-                                                        "bad [addrd]\n");
+                                                pr2serr("bad [addrd]\n");
                                                 usage();
                                                 return SG_LIB_SYNTAX_ERROR;
                                         }
@@ -455,20 +451,20 @@ int main (int argc, char * argv[])
                 }
                 if (optind < argc) {
                         for (; optind < argc; ++optind)
-                                fprintf(stderr, "Unexpected extra argument"
-                                        ": %s\n", argv[optind]);
+                                pr2serr("Unexpected extra argument" ": %s\n",
+                                        argv[optind]);
                         usage();
                         return SG_LIB_SYNTAX_ERROR;
                 }
         }
         if (NULL == device_name) {
-                fprintf(stderr, "no device name given\n");
+                pr2serr("no device name given\n");
                 usage();
                 return SG_LIB_SYNTAX_ERROR;
         }
         if ((size <= 0) && (! do_quick)) {
-                fprintf(stderr, "must give '--size' or '--quick' options "
-                        "or <sz> argument\n");
+                pr2serr("must give '--size' or '--quick' options or <sz> "
+                        "argument\n");
                 usage();
                 return SG_LIB_SYNTAX_ERROR;
         }
@@ -488,8 +484,7 @@ int main (int argc, char * argv[])
                 goto err_out;
         }
         if (size > buf_capacity) {
-                fprintf (stderr, ME "sz=%i > buf_capacity=%i\n",
-                        size, buf_capacity);
+                pr2serr (ME "sz=%i > buf_capacity=%i\n", size, buf_capacity);
                 ret = SG_LIB_CAT_OTHER;
                 goto err_out;
         }

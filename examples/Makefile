@@ -12,7 +12,7 @@ EXECS = sg_simple1 sg_simple2 sg_simple3 sg_simple4 sg_simple16 \
 	sg__sat_identify sg__sat_phy_event sg__sat_set_features \
 	sg_sat_chk_power sg_sat_smart_rd_data
 
-EXTRAS = sg_simple_aio sg_queue_tst sgq_dd
+EXTRAS = sg_queue_tst sgq_dd
 
 BSG_EXTRAS = bsg_queue_tst
 
@@ -22,9 +22,9 @@ MAN_PREF = man8
 
 LARGE_FILE_FLAGS = -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64
 
-CFLAGS = -g -O2 -W -Wall -I../include -D_REENTRANT $(LARGE_FILE_FLAGS)
-# CFLAGS = -g -O2 -Wall -I../include -D_REENTRANT -DSG_KERNEL_INCLUDES $(LARGE_FILE_FLAGS)
-# CFLAGS = -g -O2 -Wall -pedantic -I../include -D_REENTRANT $(LARGE_FILE_FLAGS)
+CFLAGS = -g -O2 -W -Wall -iquote ../include -D_REENTRANT $(LARGE_FILE_FLAGS)
+# CFLAGS = -g -O2 -Wall -iquote ../include -D_REENTRANT -DSG_KERNEL_INCLUDES $(LARGE_FILE_FLAGS)
+# CFLAGS = -g -O2 -Wall -pedantic -iquote ../include -D_REENTRANT $(LARGE_FILE_FLAGS)
 
 LDFLAGS =
 
@@ -58,12 +58,6 @@ sg_simple4: sg_simple4.o $(LIBFILESOLD)
 	$(LD) -o $@ $(LDFLAGS) $^
 
 sg_simple16: sg_simple16.o $(LIBFILESOLD)
-	$(LD) -o $@ $(LDFLAGS) $^
-
-# sg_simple_aio: sg_simple_aio.o $(LIBFILESOLD)
-# 	$(LD) -o $@ $(LDFLAGS) $^ -l aio
-
-sg_simple_aio: sg_simple_aio.o $(LIBFILESOLD)
 	$(LD) -o $@ $(LDFLAGS) $^
 
 sg_iovec_tst: sg_iovec_tst.o $(LIBFILESOLD)

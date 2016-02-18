@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006-2014 Douglas Gilbert.
+ * Copyright (c) 2006-2016 Douglas Gilbert.
  * All rights reserved.
  * Use of this source code is governed by a BSD-style
  * license that can be found in the BSD_LICENSE file.
@@ -20,8 +20,9 @@
 #include "sg_lib.h"
 #include "sg_cmds_basic.h"
 #include "sg_cmds_extra.h"
+#include "sg_pr2serr.h"
 
-static const char * version_str = "1.04 20140515";
+static const char * version_str = "1.07 20160126";
 
 /* This program uses a ATA PASS-THROUGH SCSI command. This usage is
  * defined in the SCSI to ATA Translation (SAT) drafts and standards.
@@ -100,28 +101,27 @@ static struct phy_event_t phy_event_arr[] = {   /* SATA 2.5 section 13.7.2 */
 static void
 usage()
 {
-    fprintf(stderr, "Usage: "
-          "sg_sat_phy_event [--ck_cond] [--extend] [--help] [--hex] "
-          "[--ignore]\n"
-          "                        [--len=16|12] [--raw] [--reset] "
-          "[--verbose]\n"
-          "                        [--version] DEVICE\n"
-          "  where:\n"
-          "    --ck_cond|-c    sets ck_cond bit in cdb (def: 0)\n"
-          "    --extend|-e     sets extend bit in cdb (def: 0)\n"
-          "    --help|-h       print this usage message then exit\n"
-          "    --hex|-H        output response in hex bytes, use twice for\n"
-          "                    hex words\n"
-          "    --ignore|-i     ignore identifier names, output id value "
-          "instead\n"
-          "    --len=16|12 | -l 16|12    cdb length: 16 or 12 bytes "
-          "(default: 16)\n"
-          "    --raw|-r        output response in binary to stdout\n"
-          "    --reset|-R      reset counters (after read)\n"
-          "    --verbose|-v    increase verbosity\n"
-          "    --version|-V    print version string then exit\n\n"
-          "Sends an ATA READ LOG EXT command via a SAT pass through to "
-          "fetch\nlog page 11h which contains SATA phy event counters\n");
+    pr2serr("Usage: sg_sat_phy_event [--ck_cond] [--extend] [--help] [--hex] "
+            "[--ignore]\n"
+            "                        [--len=16|12] [--raw] [--reset] "
+            "[--verbose]\n"
+            "                        [--version] DEVICE\n"
+            "  where:\n"
+            "    --ck_cond|-c    sets ck_cond bit in cdb (def: 0)\n"
+            "    --extend|-e     sets extend bit in cdb (def: 0)\n"
+            "    --help|-h       print this usage message then exit\n"
+            "    --hex|-H        output response in hex bytes, use twice for\n"
+            "                    hex words\n"
+            "    --ignore|-i     ignore identifier names, output id value "
+            "instead\n"
+            "    --len=16|12 | -l 16|12    cdb length: 16 or 12 bytes "
+            "(default: 16)\n"
+            "    --raw|-r        output response in binary to stdout\n"
+            "    --reset|-R      reset counters (after read)\n"
+            "    --verbose|-v    increase verbosity\n"
+            "    --version|-V    print version string then exit\n\n"
+            "Sends an ATA READ LOG EXT command via a SAT pass through to "
+            "fetch\nlog page 11h which contains SATA phy event counters\n");
 }
 
 static const char *
@@ -153,9 +153,12 @@ do_read_log_ext(int sg_fd, int log_addr, int page_in_log, int feature,
                 int ck_cond, int extend, int do_hex, int do_raw, int verbose)
 {
     int ok, res, ret;
+    /* Following for ATA READ/WRITE MULTIPLE (EXT) cmds, normally 0 */
+    int multiple_count = 0;
     int protocol = 4;   /* PIO data-in */
+    int t_type = 0;     /* 0 -> 512 byte blocks, 1 -> device's LB size */
     int t_dir = 1;      /* 0 -> to device, 1 -> from device */
-    int byte_block = 1; /* 0 -> bytes, 1 -> 512 byte blocks */
+    int byte_block = 1; /* 0 -> bytes, 1 -> 512 byte blocks (if t_type=0) */
     int t_length = 2;   /* 0 -> no data transferred, 2 -> sector count */
     int resid = 0;
     int got_ard = 0;    /* got ATA result descriptor */
@@ -185,8 +188,8 @@ do_read_log_ext(int sg_fd, int log_addr, int page_in_log, int feature,
                 /* lba_mid(15:8) == LBA(39:32) */
         aptCmdBlk[10] = page_in_log & 0xff; /* lba_mid(7:0) == LBA(15:8) */
         aptCmdBlk[14] = ATA_READ_LOG_EXT;
-        aptCmdBlk[1] = (protocol << 1) | extend;
-        aptCmdBlk[2] = (ck_cond << 5) | (t_dir << 3) |
+        aptCmdBlk[1] = (multiple_count << 5) | (protocol << 1) | extend;
+        aptCmdBlk[2] = (ck_cond << 5) | (t_type << 4) | (t_dir << 3) |
                        (byte_block << 2) | t_length;
         res = sg_ll_ata_pt(sg_fd, aptCmdBlk, cdb_len, DEF_TIMEOUT, resp,
                            NULL /* doutp */, mx_resp_len, sense_buffer,
@@ -199,8 +202,8 @@ do_read_log_ext(int sg_fd, int log_addr, int page_in_log, int feature,
         apt12CmdBlk[5] = log_addr & 0xff;  /* lba_low(7:0) == LBA(7:0) */
         apt12CmdBlk[6] = page_in_log & 0xff; /* lba_mid(7:0) == LBA(15:8) */
         apt12CmdBlk[9] = ATA_READ_LOG_EXT;
-        apt12CmdBlk[1] = (protocol << 1);
-        apt12CmdBlk[2] = (ck_cond << 5) | (t_dir << 3) |
+        apt12CmdBlk[1] = (multiple_count << 5) | (protocol << 1);
+        apt12CmdBlk[2] = (ck_cond << 5) | (t_type << 4) | (t_dir << 3) |
                          (byte_block << 2) | t_length;
         res = sg_ll_ata_pt(sg_fd, apt12CmdBlk, cdb_len, DEF_TIMEOUT, resp,
                            NULL /* doutp */, mx_resp_len, sense_buffer,
@@ -210,24 +213,26 @@ do_read_log_ext(int sg_fd, int log_addr, int page_in_log, int feature,
     if (0 == res) {
         ok = 1;
         if (verbose > 2)
-            fprintf(stderr, "command completed with SCSI GOOD status\n");
+            pr2serr("command completed with SCSI GOOD status\n");
     } else if ((res > 0) && (res & SAM_STAT_CHECK_CONDITION)) {
-        if (verbose > 1)
-            sg_print_sense("ATA pass through", sense_buffer, sb_sz,
+        if (verbose > 1) {
+            pr2serr("ATA pass through:\n");
+            sg_print_sense(NULL, sense_buffer, sb_sz,
                            ((verbose > 2) ? 1 : 0));
+        }
         if (sg_scsi_normalize_sense(sense_buffer, sb_sz, &ssh)) {
             switch (ssh.sense_key) {
             case SPC_SK_ILLEGAL_REQUEST:
                 if ((0x20 == ssh.asc) && (0x0 == ssh.ascq)) {
                     ret = SG_LIB_CAT_INVALID_OP;
                     if (verbose < 2)
-                        fprintf(stderr, "ATA PASS-THROUGH (%d) not "
-                                "supported\n", cdb_len);
+                        pr2serr("ATA PASS-THROUGH (%d) not supported\n",
+                                cdb_len);
                 } else {
                     ret = SG_LIB_CAT_ILLEGAL_REQ;
                     if (verbose < 2)
-                        fprintf(stderr, "ATA PASS-THROUGH (%d), bad "
-                                "field in cdb\n", cdb_len);
+                        pr2serr("ATA PASS-THROUGH (%d), bad field in cdb\n",
+                                cdb_len);
                 }
                 return ret;
             case SPC_SK_NO_SENSE:
@@ -236,8 +241,8 @@ do_read_log_ext(int sg_fd, int log_addr, int page_in_log, int feature,
                     (ASCQ_ATA_PT_INFO_AVAILABLE == ssh.ascq)) {
                     if (SAT_ATA_RETURN_DESC != ata_return_desc[0]) {
                         if (verbose)
-                            fprintf(stderr, "did not find ATA Return "
-                                    "(sense) Descriptor\n");
+                            pr2serr("did not find ATA Return (sense) "
+                                    "Descriptor\n");
                         return SG_LIB_CAT_RECOVERED;
                     }
                     got_ard = 1;
@@ -251,70 +256,68 @@ do_read_log_ext(int sg_fd, int log_addr, int page_in_log, int feature,
                 }
             case SPC_SK_UNIT_ATTENTION:
                 if (verbose < 2)
-                    fprintf(stderr, "ATA PASS-THROUGH (%d), Unit Attention "
-                                "detected\n", cdb_len);
+                    pr2serr("ATA PASS-THROUGH (%d), Unit Attention detected\n",
+                            cdb_len);
                 return SG_LIB_CAT_UNIT_ATTENTION;
             case SPC_SK_NOT_READY:
                 if (verbose < 2)
-                    fprintf(stderr, "ATA PASS-THROUGH (%d), device not "
-                                "ready\n", cdb_len);
+                    pr2serr("ATA PASS-THROUGH (%d), device not ready\n",
+                            cdb_len);
                 return SG_LIB_CAT_NOT_READY;
             case SPC_SK_MEDIUM_ERROR:
             case SPC_SK_HARDWARE_ERROR:
                 if (verbose < 2)
-                    fprintf(stderr, "ATA PASS-THROUGH (%d), medium or "
-                            "hardware error\n", cdb_len);
+                    pr2serr("ATA PASS-THROUGH (%d), medium or hardware "
+                            "error\n", cdb_len);
                 return SG_LIB_CAT_MEDIUM_HARD;
             case SPC_SK_ABORTED_COMMAND:
                 if (0x10 == ssh.asc) {
-                    fprintf(stderr, "Aborted command: protection "
-                            "information\n");
+                    pr2serr("Aborted command: protection information\n");
                     return SG_LIB_CAT_PROTECTION;
                 } else {
-                    fprintf(stderr, "Aborted command\n");
+                    pr2serr("Aborted command\n");
                     return SG_LIB_CAT_ABORTED_COMMAND;
                 }
             case SPC_SK_DATA_PROTECT:
-                fprintf(stderr, "ATA PASS-THROUGH (%d): data protect, read "
-                            "only media?\n", cdb_len);
+                pr2serr("ATA PASS-THROUGH (%d): data protect, read only "
+                        "media?\n", cdb_len);
                 return SG_LIB_CAT_DATA_PROTECT;
             default:
                 if (verbose < 2)
-                    fprintf(stderr, "ATA PASS-THROUGH (%d), some sense "
-                            "data, use '-v' for more information\n", cdb_len);
+                    pr2serr("ATA PASS-THROUGH (%d), some sense data, use "
+                            "'-v' for more information\n", cdb_len);
                 return SG_LIB_CAT_SENSE;
             }
         } else {
-            fprintf(stderr, "CHECK CONDITION without response code ??\n");
+            pr2serr("CHECK CONDITION without response code ??\n");
             return SG_LIB_CAT_SENSE;
         }
         if (0x72 != (sense_buffer[0] & 0x7f)) {
-            fprintf(stderr, "expected descriptor sense format, response "
-                    "code=0x%x\n", sense_buffer[0]);
+            pr2serr("expected descriptor sense format, response code=0x%x\n",
+                    sense_buffer[0]);
             return SG_LIB_CAT_MALFORMED;
         }
     } else if (res > 0) {
         if (SAM_STAT_RESERVATION_CONFLICT == res) {
-            fprintf(stderr, "SCSI status: RESERVATION CONFLICT\n");
+            pr2serr("SCSI status: RESERVATION CONFLICT\n");
             return SG_LIB_CAT_RES_CONFLICT;
         } else {
-            fprintf(stderr, "Unexpected SCSI status=0x%x\n", res);
+            pr2serr("Unexpected SCSI status=0x%x\n", res);
             return SG_LIB_CAT_MALFORMED;
         }
     } else {
-        fprintf(stderr, "ATA pass through (%d) failed\n", cdb_len);
+        pr2serr("ATA pass through (%d) failed\n", cdb_len);
         if (verbose < 2)
-            fprintf(stderr, "    try adding '-v' for more information\n");
+            pr2serr("    try adding '-v' for more information\n");
         return -1;
     }
 
     if ((SAT_ATA_RETURN_DESC == ata_return_desc[0]) && (0 == got_ard))
-        fprintf(stderr, "Seem to have got ATA Result Descriptor but "
-                "it was not indicated\n");
+        pr2serr("Seem to have got ATA Result Descriptor but it was not "
+                "indicated\n");
     if (got_ard) {
         if (ata_return_desc[3] & 0x4) {
-                fprintf(stderr, "error indication in returned FIS: aborted "
-                        "command\n");
+                pr2serr("error indication in returned FIS: aborted command\n");
                 return SG_LIB_CAT_ABORTED_COMMAND;
         }
         ok = 1;
@@ -378,9 +381,9 @@ int main(int argc, char * argv[])
             ++ignore;
             break;
         case 'l':
-           cdb_len = sg_get_num(optarg);
-           if (! ((cdb_len == 12) || (cdb_len == 16))) {
-                fprintf(stderr, "argument to '--len' should be 12 or 16\n");
+            cdb_len = sg_get_num(optarg);
+            if (! ((cdb_len == 12) || (cdb_len == 16))) {
+                pr2serr("argument to '--len' should be 12 or 16\n");
                 return SG_LIB_SYNTAX_ERROR;
             }
             break;
@@ -394,10 +397,10 @@ int main(int argc, char * argv[])
             ++verbose;
             break;
         case 'V':
-            fprintf(stderr, "version: %s\n", version_str);
+            pr2serr("version: %s\n", version_str);
             exit(0);
         default:
-            fprintf(stderr, "unrecognised option code %c [0x%x]\n", c, c);
+            pr2serr("unrecognised option code %c [0x%x]\n", c, c);
             usage();
             return SG_LIB_SYNTAX_ERROR;
         }
@@ -409,14 +412,13 @@ int main(int argc, char * argv[])
         }
         if (optind < argc) {
             for (; optind < argc; ++optind)
-                fprintf(stderr, "Unexpected extra argument: %s\n",
-                        argv[optind]);
+                pr2serr("Unexpected extra argument: %s\n", argv[optind]);
             usage();
             return SG_LIB_SYNTAX_ERROR;
         }
     }
     if (0 == device_name) {
-        fprintf(stderr, "no DEVICE name detected\n");
+        pr2serr("no DEVICE name detected\n");
         usage();
         return SG_LIB_SYNTAX_ERROR;
     }
@@ -467,7 +469,7 @@ int main(int argc, char * argv[])
 
     res = close(sg_fd);
     if (res < 0) {
-        fprintf(stderr, "close error: %s\n", safe_strerror(-res));
+        pr2serr("close error: %s\n", safe_strerror(-res));
         if (0 == ret)
             return SG_LIB_FILE_ERROR;
     }

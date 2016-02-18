@@ -141,8 +141,8 @@ clean POSIX compliant C code with Linux specific system calls and structures
 removed and placed in Linux specific files in the lib directory. A small
 number of utilities in the src directory do contain Linux specific logic
 and are not ported to other OSes (e.g. sg_dd). One utility, sg_scan, has
-two separate implementations, one for Linux (sg_scan.c.linux) and one for
-Windows (sg_scan.c.win32). The src-lib directory split approach allows
+two separate implementations, one for Linux (sg_scan_linux.c) and one for
+Windows (sg_scan_win32.c). The src-lib directory split approach allows
 FreeBSD, Solaris, Tru64 and Windows specific code to be isolated to a few
 files in the lib directory whose interfaces match those of the Linux
 specific code.
@@ -233,12 +233,14 @@ subdirectory of the sg3_utils package:
     sg_decode_sense, sg_emc_trespass, sg_format, sg_get_config,
     sg_get_lba_status, sg_ident, sg_inq, sg_logs, sg_luns, sg_map, sg_map26,
     sg_modes, sg_opcodes, sg_persist, sg_prevent, sg_raw, sg_rbuf, sg_rdac,
-    sg_read, sg_readcap, sg_read_block_limits, sg_read_buffer, sg_read_long,
-    sg_reassign, sg_referrals, sg_request, sg_reset, sg_rmsn, sg_rtpg,
-    sg_safte, sg_sanitize, sg_sat_identify, sg_sat_phy_event,
-    sg_sat_set_features, sg_scan, sg_senddiag, sg_ses, sg_start, sg_stpg,
-    sg_sync, sg_test_rwbuff, sg_turs, sg_unmap, sg_verify, sg_vpd,
-    sg_write_buffer, sg_write_long, sg_write_same, sg_wr_mode, sg_xcopy
+    sg_read, sg_read_attr, sg_readcap, sg_read_block_limits, sg_read_buffer,
+    sg_read_long, sg_reassign, sg_referrals, sg_request, sg_reset, sg_rmsn,
+    sg_rtpg, sg_safte, sg_sanitize, sg_sat_identify, sg_sat_phy_event,
+    sg_sat_read_gplog, sg_sat_set_features, sg_scan, sg_senddiag, sg_ses,
+    sg_ses_microcode, sg_start, sg_stpg, sg_sync, sg_test_rwbuff,
+    sg_timestamp, sg_turs, sg_unmap, sg_verify, sg_vpd, sg_write_buffer,
+    sg_write_long, sg_write_same, sg_write_verify sg_wr_mode, sg_xcopy,
+    sg_zone
 
 Each of the above utilities depends on header files found in the 'include'
 subdirectory and library code found in the 'lib' subdirectory. Associated
@@ -264,7 +266,7 @@ subdirectory:
     sg_sat_chk_power, sg__sat_identify, sg__sat_phy_event,
     sg__sat_set_features, sg_sat_smart_rd_data, sg_simple1, sg_simple2,
     sg_simple3, sg_simple4, sg_simple5, sg_simple16, sg_tst_excl,
-    sg_tst_excl2 and sg_tst_excl3
+    sg_tst_excl2, sg_tst_excl3, sg_tst_context and sg_tst_async
 
 Also in that subdirectory is a script to test sg_persist, an example data
 file for sg_persist (called "transport_ids.txt") and an example data file for
@@ -347,6 +349,13 @@ which is used by the bsg driver. So it will take device names like
 "/dev/bsg/6:0:0:0". It tests if sending repeated INQUIRYs with
 the BSG_FLAG_Q_AT_HEAD or BSG_FLAG_Q_AT_TAIL flag makes any difference.
 
+"sg_tst_async" is a test harness for the Linux sg driver. It is multi
+threaded, submitting either TEST UNIT READY, READ(16) or WRITE(16) SCSI
+commands asynchronously. Each thread opens a file descriptor and submits
+those commands up to the queue limit (sg driver has a per file descriptor
+queue limit of 16). Multiple threads doing the same thing act as a
+multiplier to that queue limit.
+
 
 Command line processing
 =======================
@@ -375,11 +384,13 @@ or using '-O' as the first command line option.
 The more recent utilities that use "getopt_long" only are:
   - sg_compare_and_write, sg_decode_sense, sg_format, sg_get_config,
     sg_get_lba_status, sg_ident, sg_luns, sg_map26, sg_persist, sg_prevent,
-    sg_raw, sg_read_block_limits, sg_read_buffer, sg_read_long, sg_reassign,
-    sg_referrals, sg_requests, sg_rmsn, sg_rtpg, sg_safte, sg_sanitize,
-    sg_sat_identify, sg_sat_phy_event, sg_sat_set_features, sg_scan(w),
-    sg_ses, sg_stpg, sg_sync, sg_test_rwbuf, sg_unmap, sg_verify, sg_vpd,
-    sg_write_buffer, sg_write_long, sg_write_same, sg_wr_mode
+    sg_raw, sg_read_attr, sg_read_block_limits, sg_read_buffer, sg_read_long,
+    sg_reassign, sg_referrals, sg_requests, sg_rmsn, sg_rtpg, sg_safte,
+    sg_sanitize, sg_sat_identify, sg_sat_phy_event, sg_sat_read_gplog,
+    sg_sat_set_features, sg_scan(w), sg_ses, sg_ses_microcode, sg_stpg,
+    sg_sync, sg_test_rwbuf, sg_timestamp, sg_unmap, sg_verify, sg_vpd,
+    sg_write_buffer, sg_write_long, sg_write_same, sg_write_verify,
+    sg_wr_mode, sg_zone
 
 
 Dangerous code
@@ -403,4 +414,4 @@ See http://sg.danny.cz/sg/tools.html
 
 
 Douglas Gilbert
-12th June 2014
+17th February 2016

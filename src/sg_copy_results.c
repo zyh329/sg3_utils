@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2014 Hannes Reinecke, SUSE Labs
+ * Copyright (c) 2011-2015 Hannes Reinecke, SUSE Labs
  * All rights reserved.
  * Use of this source code is governed by a BSD-style
  * license that can be found in the BSD_LICENSE file.
@@ -8,7 +8,6 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdarg.h>
 #include <string.h>
 #include <errno.h>
 #include <getopt.h>
@@ -21,6 +20,8 @@
 #include "sg_lib.h"
 #include "sg_cmds_basic.h"
 #include "sg_cmds_extra.h"
+#include "sg_unaligned.h"
+#include "sg_pr2serr.h"
 
 /* A utility program for the Linux OS SCSI subsystem.
    *  Copyright (C) 2004-2010 D. Gilbert
@@ -35,7 +36,7 @@
    and the optional list identifier passed as the list_id argument.
 */
 
-static const char * version_str = "1.9 20140515";
+static const char * version_str = "1.12 20150227";
 
 
 #define MAX_XFER_LEN 10000
@@ -99,26 +100,6 @@ struct descriptor_type segment_descriptor_codes [] = {
     { -1, "" }
 };
 
-#ifdef __GNUC__
-static int pr2serr(const char * fmt, ...)
-        __attribute__ ((format (printf, 1, 2)));
-#else
-static int pr2serr(const char * fmt, ...);
-#endif
-
-
-static int
-pr2serr(const char * fmt, ...)
-{
-    va_list args;
-    int n;
-
-    va_start(args, fmt);
-    n = vfprintf(stderr, fmt, args);
-    va_end(args);
-    return n;
-}
-
 
 static void
 scsi_failed_segment_details(unsigned char *rcBuff, unsigned int rcBuffLen)
@@ -131,11 +112,10 @@ scsi_failed_segment_details(unsigned char *rcBuff, unsigned int rcBuffLen)
         pr2serr("  <<not enough data to procedd report>>\n");
         return;
     }
-    len = (rcBuff[0] << 24) | (rcBuff[1] << 16) | (rcBuff[2] << 8) |
-          rcBuff[3];
-    if (len + 3 > rcBuffLen) {
-        pr2serr("  <<report too long for internal buffer, output "
-                "truncated\n");
+    len = sg_get_unaligned_be32(rcBuff + 0);
+    if (len + 4 > rcBuffLen) {
+        pr2serr("  <<report len %d > %d too long for internal buffer, output "
+                "truncated\n", len, rcBuffLen);
     }
     if (len < 52) {
         pr2serr("  <<no segment details, response data length %d\n", len);
@@ -143,7 +123,7 @@ scsi_failed_segment_details(unsigned char *rcBuff, unsigned int rcBuffLen)
     }
     printf("Receive copy results (failed segment details):\n");
     printf("    Extended copy command status: %d\n", rcBuff[56]);
-    senseLen = (rcBuff[58] << 8) | rcBuff[59];
+    senseLen = sg_get_unaligned_be16(rcBuff + 58);
     sg_get_sense_str("    ", &rcBuff[60], senseLen, 0, 1024, senseBuff);
     printf("%s", senseBuff);
 }
@@ -154,14 +134,13 @@ scsi_copy_status(unsigned char *rcBuff, unsigned int rcBuffLen)
     unsigned int len;
 
     if (rcBuffLen < 4) {
-        pr2serr("  <<not enough data to procedd report>>\n");
+        pr2serr("  <<not enough data to proceed report>>\n");
         return;
     }
-    len = (rcBuff[0] << 24) | (rcBuff[1] << 16) | (rcBuff[2] << 8) |
-          rcBuff[3];
-    if (len > rcBuffLen) {
-        pr2serr("  <<report too long for internal buffer, output "
-                "truncated\n");
+    len = sg_get_unaligned_be32(rcBuff + 0);
+    if (len + 4 > rcBuffLen) {
+        pr2serr("  <<report len %d > %d too long for internal buffer, output "
+                "truncated\n", len, rcBuffLen);
     }
     printf("Receive copy results (copy status):\n");
     printf("    Held data discarded: %s\n", rcBuff[4] & 0x80 ? "Yes":"No");
@@ -180,10 +159,9 @@ scsi_copy_status(unsigned char *rcBuff, unsigned int rcBuffLen)
         printf("Unknown/Reserved\n");
         break;
     }
-    printf("    Segments processed: %u\n", (rcBuff[5] << 8) | rcBuff[6]);
+    printf("    Segments processed: %u\n", sg_get_unaligned_be16(rcBuff + 5));
     printf("    Transfer count units: %u\n", rcBuff[7]);
-    printf("    Transfer count: %u\n",
-           rcBuff[8] << 24 | rcBuff[9] << 16 | rcBuff[10] << 8 | rcBuff[11]);
+    printf("    Transfer count: %u\n", sg_get_unaligned_be32(rcBuff + 8));
 }
 
 static void
@@ -191,47 +169,50 @@ scsi_operating_parameters(unsigned char *rcBuff, unsigned int rcBuffLen)
 {
     unsigned int len, n;
 
-    len = (rcBuff[0] << 24) | (rcBuff[1] << 16) | (rcBuff[2] << 8) |
-          rcBuff[3];
-    if (len > rcBuffLen) {
-        pr2serr("  <<report too long for internal buffer, output "
-                "truncated\n");
+    len = sg_get_unaligned_be32(rcBuff + 0);
+    if (len + 4 > rcBuffLen) {
+        pr2serr("  <<report len %d > %d too long for internal buffer, output "
+                "truncated\n", len, rcBuffLen);
     }
     printf("Receive copy results (report operating parameters):\n");
     printf("    Supports no list identifier (SNLID): %s\n",
            rcBuff[4] & 1 ? "yes" : "no");
-    n = (rcBuff[8] << 8) | rcBuff[9];
+    n = sg_get_unaligned_be16(rcBuff + 8);
     printf("    Maximum target descriptor count: %u\n", n);
-    n = (rcBuff[10] << 8) | rcBuff[11];
+    n = sg_get_unaligned_be16(rcBuff + 10);
     printf("    Maximum segment descriptor count: %u\n", n);
-    n = (rcBuff[12] << 24) | (rcBuff[13] << 16) |
-        (rcBuff[14] << 8) | rcBuff[15];
+    n = sg_get_unaligned_be32(rcBuff + 12);
     printf("    Maximum descriptor list length: %u bytes\n", n);
-    n = (rcBuff[16] << 24) | (rcBuff[17] << 16) |
-        (rcBuff[18] << 8) | rcBuff[19];
+    n = sg_get_unaligned_be32(rcBuff + 16);
     printf("    Maximum segment length: %u bytes\n", n);
-    n = (rcBuff[20] << 24) | (rcBuff[21] << 16) |
-        (rcBuff[22] << 8) | rcBuff[23];
+    n = sg_get_unaligned_be32(rcBuff + 20);
     if (n == 0) {
         printf("    Inline data not supported\n");
     } else {
         printf("    Maximum inline data length: %u bytes\n", n);
     }
-    n = (rcBuff[24] << 24) | (rcBuff[25] << 16) |
-        (rcBuff[26] << 8) | rcBuff[27];
+    n = sg_get_unaligned_be32(rcBuff + 24);
     printf("    Held data limit: %u bytes\n", n);
-    n = (rcBuff[28] << 24) | (rcBuff[29] << 16) |
-        (rcBuff[30] << 8) | rcBuff[31];
+    n = sg_get_unaligned_be32(rcBuff + 28);
     printf("    Maximum stream device transfer size: %u bytes\n", n);
-    n = (rcBuff[34] << 8) | rcBuff[35];
+    n = sg_get_unaligned_be16(rcBuff + 34);
     printf("    Total concurrent copies: %u\n", n);
     printf("    Maximum concurrent copies: %u\n", rcBuff[36]);
-    printf("    Data segment granularity: %lu bytes\n",
-           (unsigned long)(1 << rcBuff[37]));
-    printf("    Inline data granularity: %lu bytes\n",
-           (unsigned long)(1 << rcBuff[38]));
-    printf("    Held data granularity: %lu bytes\n",
-           (unsigned long)(1 << rcBuff[39]));
+    if (rcBuff[37] > 30)
+        printf("    Data segment granularity: 2**%u bytes\n", rcBuff[37]);
+    else
+        printf("    Data segment granularity: %u bytes\n",
+               (unsigned int)(1 << rcBuff[37]));
+    if (rcBuff[38] > 30)
+        printf("    Inline data granularity: %u bytes\n", rcBuff[38]);
+    else
+        printf("    Inline data granularity: %u bytes\n",
+               (unsigned int)(1 << rcBuff[38]));
+    if (rcBuff[39] > 30)
+        printf("    Held data granularity: 2**%u bytes\n", rcBuff[39]);
+    else
+        printf("    Held data granularity: %u bytes\n",
+               (unsigned int)(1 << rcBuff[39]));
 
     printf("    Implemented descriptor list:\n");
     for (n = 0; n < rcBuff[43]; n++) {

@@ -1,5 +1,5 @@
 /* A utility program originally written for the Linux OS SCSI subsystem.
-*  Copyright (C) 2000-2014 D. Gilbert
+*  Copyright (C) 2000-2016 D. Gilbert
 *  This program is free software; you can redistribute it and/or modify
 *  it under the terms of the GNU General Public License as published by
 *  the Free Software Foundation; either version 2, or (at your option)
@@ -26,10 +26,10 @@ const char * sg_ansi_version_arr[] =
     "no conformance claimed",
     "SCSI-1",           /* obsolete, ANSI X3.131-1986 */
     "SCSI-2",           /* obsolete, ANSI X3.131-1994 */
-    "SPC",              /* withdrawn */
-    "SPC-2",
-    "SPC-3",
-    "SPC-4",
+    "SPC",              /* withdrawn, ANSI INCITS 301-1997 */
+    "SPC-2",            /* ANSI INCITS 351-2001, ISO/IEC 14776-452 */
+    "SPC-3",            /* ANSI INCITS 408-2005, ISO/IEC 14776-453 */
+    "SPC-4",            /* ANSI INCITS 513-2015 */
     "SPC-5",
     "ecma=1, [8h]",
     "ecma=1, [9h]",
@@ -48,8 +48,8 @@ struct sg_version_descriptor {
     const char * name;
 };
 
-/* table from SPC-4 revision 36 [sorted numerically (from Annex E.9)] */
-/* Can also be obtained from : http://www.t10.org/lists/stds.txt 20140517 */
+/* table from SPC-5 revision 08 [sorted numerically (from Annex E.9)] */
+/* Can also be obtained from : http://www.t10.org/lists/stds.txt 20160125 */
 
 
 #ifdef SG_SCSI_STRINGS
@@ -75,6 +75,9 @@ struct sg_version_descriptor sg_version_descriptor_arr[] = {
     {0x92, "SAM-4 ISO/IEC 14776-414"},
     {0xa0, "SAM-5 (no version claimed)"},
     {0xa2, "SAM-5 T10/2104-D revision 4"},
+    {0xa4, "SAM-5 T10/2104-D revision 20"},
+    {0xa6, "SAM-5 T10/2104-D revision 21"},
+    {0xc0, "SAM-6 (no version claimed)"},
     {0x120, "SPC (no version claimed)"},
     {0x13b, "SPC T10/0995-D revision 11a"},
     {0x13c, "SPC ANSI INCITS 301-1997"},
@@ -175,6 +178,7 @@ struct sg_version_descriptor sg_version_descriptor_arr[] = {
     {0x403, "SSC-3 T10/1611-D revision 04a"},
     {0x407, "SSC-3 T10/1611-D revision 05"},
     {0x409, "SSC-3 ANSI INCITS 467-2011"},
+    {0x40b, "SSC-3 ISO/IEC 14776-333:2013"},
     {0x420, "MMC-5 (no version claimed)"},
     {0x42f, "MMC-5 T10/1675-D revision 03"},
     {0x431, "MMC-5 T10/1675-D revision 03b"},
@@ -190,6 +194,8 @@ struct sg_version_descriptor sg_version_descriptor_arr[] = {
     {0x463, "SPC-4 T10/BSR INCITS 513 revision 23"},
     {0x466, "SPC-4 T10/BSR INCITS 513 revision 36"},
     {0x468, "SPC-4 T10/BSR INCITS 513 revision 37"},
+    {0x469, "SPC-4 T10/BSR INCITS 513 revision 37a"},
+    {0x46c, "SPC-4 ANSI INCITS 513-2015"},
     {0x480, "SMC-3 (no version claimed)"},
     {0x482, "SMC-3 T10/1730-D revision 15"},
     {0x482, "SMC-3 T10/1730-D revision 16"},
@@ -201,6 +207,7 @@ struct sg_version_descriptor sg_version_descriptor_arr[] = {
     {0x4c0, "SBC-3 (no version claimed)"},
     {0x4c3, "SBC-3 T10/BSR INCITS 514 revision 35"},
     {0x4c5, "SBC-3 T10/BSR INCITS 514 revision 36"},
+    {0x4c8, "SBC-3 ANSI INCITS 514-2014"},
     {0x4e0, "MMC-6 (no version claimed)"},
     {0x4e3, "MMC-6 T10/1836-D revision 2b"},
     {0x4e5, "MMC-6 T10/1836-D revision 02g"},
@@ -221,8 +228,14 @@ struct sg_version_descriptor sg_version_descriptor_arr[] = {
     {0x5a0, "SSC-5 (no version claimed)"},
     {0x5c0, "SPC-5 (no version claimed)"},
     {0x5e0, "SFSC (no version claimed)"},
+    {0x5e3, "SFSC BSR INCITS 501 revision 01"},
+    {0x5e5, "SFSC BSR INCITS 501 revision 02"},
     {0x600, "SBC-4 (no version claimed)"},
     {0x620, "ZBC (no version claimed)"},
+    {0x622, "ZBC BSR INCITS 536 revision 02"},
+    {0x624, "ZBC BSR INCITS 536 revision 05"},
+    {0x640, "ADC-4 (no version claimed)"},
+    {0x660, "ZBC-2 (no version claimed)"},
     {0x820, "SSA-TL2 (no version claimed)"},
     {0x83b, "SSA-TL2 T10/1147-D revision 05b"},
     {0x83c, "SSA-TL2 ANSI INCITS 308-1998"},
@@ -266,7 +279,7 @@ struct sg_version_descriptor sg_version_descriptor_arr[] = {
     {0x99a, "SBP-3 T10/1467-D revision 4"},
     {0x99b, "SBP-3 T10/1467-D revision 5"},
     {0x99c, "SBP-3 ANSI INCITS 375-2004"},
-    /* {0x9a0, "SRP-2 (no version claimed)"}, */
+    {0x9a0, "SRP-2 (no version claimed)"},
     {0x9c0, "ADP (no version claimed)"},
     {0x9e0, "ADT (no version claimed)"},
     {0x9f9, "ADT T10/1557-D revision 11"},
@@ -287,6 +300,7 @@ struct sg_version_descriptor sg_version_descriptor_arr[] = {
     {0xa44, "FCP-4 T10/1828-D revision 02"},
     {0xa45, "FCP-4 T10/1828-D revision 02b"},
     {0xa46, "FCP-4 ANSI INCITS 481-2012"},
+    {0xa60, "ADT-3 (no version claimed)"},
     {0xaa0, "SPI (no version claimed)"},
     {0xab9, "SPI T10/0855-D revision 15a"},
     {0xaba, "SPI ANSI INCITS 253-1995"},
@@ -341,9 +355,11 @@ struct sg_version_descriptor sg_version_descriptor_arr[] = {
     {0xc4e, "SAS-2.1 ANSI INCITS 478-2011"},
     {0xc4f, "SAS-2.1 ANSI INCITS 478-2011 w/ Amnd 1 ANSI INCITS "
             "478/AM1-2014"},
+    {0xc52, "SAS-2.1 ISO/IEC 14776-153"},
     {0xc60, "SAS-3 (no version claimed)"},
     {0xc63, "SAS-3 T10/BSR INCITS 519 revision 05a"},
     {0xc65, "SAS-3 T10/BSR INCITS 519 revision 06"},
+    {0xc68, "SAS-3 ANSI INCITS 519-2014"},
     {0xc80, "SAS-4 (no version claimed)"},
     {0xd20, "FC-PH (no version claimed)"},
     {0xd3b, "FC-PH ANSI INCITS 230-1994"},
@@ -466,6 +482,7 @@ struct sg_version_descriptor sg_version_descriptor_arr[] = {
     {0x1743, "UAS T10/2095-D revision 02"},
     {0x1747, "UAS T10/2095-D revision 04"},
     {0x1748, "UAS ANSI INCITS 471-2010"},
+    {0x1749, "UAS ISO/IEC 14776-251:2014"},
     {0x1780, "UAS-2 (no version claimed)"},
     {0x1ea0, "SAT (no version claimed)"},
     {0x1ea7, "SAT T10/1711-D rev 8"},
@@ -476,7 +493,9 @@ struct sg_version_descriptor sg_version_descriptor_arr[] = {
     {0x1ec8, "SAT-2 T10/1826-D revision 09"},
     {0x1eca, "SAT-2 ANSI INCITS 465-2010"},
     {0x1ee0, "SAT-3 (no version claimed)"},
-    {0x1ee2, "SAT-3 T10/2126-D revision 4"},
+    {0x1ee2, "SAT-3 T10/BSR INCITS 517 revision 4"},
+    {0x1ee4, "SAT-3 T10/BSR INCITS 517 revision 7"},
+    {0x1ee8, "SAT-3 ANSI INCITS 517-2015"},
     {0x1f00, "SAT-4 (no version claimed)"},
     {0x20a0, "SPL (no version claimed)"},
     {0x20a3, "SPL T10/2124-D revision 6a"},
@@ -491,15 +510,19 @@ struct sg_version_descriptor sg_version_descriptor_arr[] = {
     {0x20e0, "SPL-3 (no version claimed)"},
     {0x20e4, "SPL-3 T10/BSR INCITS 492 revision 6"},
     {0x20e6, "SPL-3 T10/BSR INCITS 492 revision 7"},
+    {0x20e8, "SPL-3 ANSI INCITS 492-2015"},
     {0x2100, "SPL-4 (no version claimed)"},
     {0x21e0, "SOP (no version claimed)"},
     {0x21e4, "SOP T10/BSR INCITS 489 revision 4"},
     {0x21e6, "SOP T10/BSR INCITS 489 revision 5"},
+    {0x21e8, "SOP ANSI INCITS 489-2014"},
     {0x2200, "PQI (no version claimed)"},
     {0x2204, "PQI T10/BSR INCITS 490 revision 6"},
     {0x2206, "PQI T10/BSR INCITS 490 revision 7"},
-    {0x2220, "SOP-2 (no version claimed)"},
+    {0x2208, "PQI ANSI INCITS 490-2014"},
+    {0x2220, "SOP-2 (no draft published)"},
     {0x2240, "PQI-2 (no version claimed)"},
+    {0x2242, "PQI-2 T10/BSR INCITS 507 revision 01"},
     {0xffc0, "IEEE 1667 (no version claimed)"},
     {0xffc1, "IEEE 1667-2006"},
     {0xffc2, "IEEE 1667-2009"},

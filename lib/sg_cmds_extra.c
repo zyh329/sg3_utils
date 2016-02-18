@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999-2014 Douglas Gilbert.
+ * Copyright (c) 1999-2016 Douglas Gilbert.
  * All rights reserved.
  * Use of this source code is governed by a BSD-style
  * license that can be found in the BSD_LICENSE file.
@@ -7,6 +7,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include <unistd.h>
 #define __STDC_FORMAT_MACROS 1
@@ -17,6 +18,7 @@
 #include "sg_cmds_basic.h"
 #include "sg_cmds_extra.h"
 #include "sg_pt.h"
+#include "sg_unaligned.h"
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
@@ -89,6 +91,26 @@
 #define REPORT_REFERRALS_SA 0x13
 #define EXTENDED_COPY_LID1_SA 0x0
 
+#ifdef __GNUC__
+static int pr2ws(const char * fmt, ...)
+        __attribute__ ((format (printf, 1, 2)));
+#else
+static int pr2ws(const char * fmt, ...);
+#endif
+
+
+static int
+pr2ws(const char * fmt, ...)
+{
+    va_list args;
+    int n;
+
+    va_start(args, fmt);
+    n = vfprintf(sg_warnings_strm ? sg_warnings_strm : stderr, fmt, args);
+    va_end(args);
+    return n;
+}
+
 
 /* Invokes a SCSI GET LBA STATUS command (SBC). Returns 0 -> success,
  * various SG_LIB_CAT_* positive values or -1 -> other errors */
@@ -105,30 +127,18 @@ sg_ll_get_lba_status(int sg_fd, uint64_t start_llba, void * resp,
     getLbaStatCmd[0] = SERVICE_ACTION_IN_16_CMD;
     getLbaStatCmd[1] = GET_LBA_STATUS_SA;
 
-    getLbaStatCmd[2] = (start_llba >> 56) & 0xff;
-    getLbaStatCmd[3] = (start_llba >> 48) & 0xff;
-    getLbaStatCmd[4] = (start_llba >> 40) & 0xff;
-    getLbaStatCmd[5] = (start_llba >> 32) & 0xff;
-    getLbaStatCmd[6] = (start_llba >> 24) & 0xff;
-    getLbaStatCmd[7] = (start_llba >> 16) & 0xff;
-    getLbaStatCmd[8] = (start_llba >> 8) & 0xff;
-    getLbaStatCmd[9] = start_llba & 0xff;
-    getLbaStatCmd[10] = (alloc_len >> 24) & 0xff;
-    getLbaStatCmd[11] = (alloc_len >> 16) & 0xff;
-    getLbaStatCmd[12] = (alloc_len >> 8) & 0xff;
-    getLbaStatCmd[13] = alloc_len & 0xff;
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
+    sg_put_unaligned_be64(start_llba, getLbaStatCmd + 2);
+    sg_put_unaligned_be32((uint32_t)alloc_len, getLbaStatCmd + 10);
     if (verbose) {
-        fprintf(sg_warnings_strm, "    Get LBA status cmd: ");
+        pr2ws("    Get LBA status cmd: ");
         for (k = 0; k < SERVICE_ACTION_IN_16_CMDLEN; ++k)
-            fprintf(sg_warnings_strm, "%02x ", getLbaStatCmd[k]);
-        fprintf(sg_warnings_strm, "\n");
+            pr2ws("%02x ", getLbaStatCmd[k]);
+        pr2ws("\n");
     }
 
     ptvp = construct_scsi_pt_obj();
     if (NULL == ptvp) {
-        fprintf(sg_warnings_strm, "get LBA status: out of memory\n");
+        pr2ws("get LBA status: out of memory\n");
         return -1;
     }
     set_scsi_pt_cdb(ptvp, getLbaStatCmd, sizeof(getLbaStatCmd));
@@ -151,8 +161,8 @@ sg_ll_get_lba_status(int sg_fd, uint64_t start_llba, void * resp,
         }
     } else {
         if ((verbose > 2) && (ret > 0)) {
-            fprintf(sg_warnings_strm, "    get LBA status: response%s\n",
-                    (ret > 256 ? ", first 256 bytes" : ""));
+            pr2ws("    get LBA status: response%s\n",
+                  (ret > 256 ? ", first 256 bytes" : ""));
             dStrHexErr((const char *)resp, (ret > 256 ? 256 : ret), -1);
         }
         ret = 0;
@@ -185,23 +195,17 @@ sg_ll_report_tgt_prt_grp2(int sg_fd, void * resp, int mx_resp_len,
     if (extended) {
         rtpgCmdBlk[1] |= 0x20;
     }
-    rtpgCmdBlk[6] = (mx_resp_len >> 24) & 0xff;
-    rtpgCmdBlk[7] = (mx_resp_len >> 16) & 0xff;
-    rtpgCmdBlk[8] = (mx_resp_len >> 8) & 0xff;
-    rtpgCmdBlk[9] = mx_resp_len & 0xff;
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
+    sg_put_unaligned_be32((uint32_t)mx_resp_len, rtpgCmdBlk + 6);
     if (verbose) {
-        fprintf(sg_warnings_strm, "    report target port groups cdb: ");
+        pr2ws("    report target port groups cdb: ");
         for (k = 0; k < MAINTENANCE_IN_CMDLEN; ++k)
-            fprintf(sg_warnings_strm, "%02x ", rtpgCmdBlk[k]);
-        fprintf(sg_warnings_strm, "\n");
+            pr2ws("%02x ", rtpgCmdBlk[k]);
+        pr2ws("\n");
     }
 
     ptvp = construct_scsi_pt_obj();
     if (NULL == ptvp) {
-        fprintf(sg_warnings_strm, "report target port groups: out of "
-                "memory\n");
+        pr2ws("report target port groups: out of memory\n");
         return -1;
     }
     set_scsi_pt_cdb(ptvp, rtpgCmdBlk, sizeof(rtpgCmdBlk));
@@ -225,8 +229,8 @@ sg_ll_report_tgt_prt_grp2(int sg_fd, void * resp, int mx_resp_len,
         }
     } else {
         if ((verbose > 2) && (ret > 0)) {
-            fprintf(sg_warnings_strm, "    report target port group: "
-                    "response%s\n", (ret > 256 ? ", first 256 bytes" : ""));
+            pr2ws("    report target port group: response%s\n",
+                  (ret > 256 ? ", first 256 bytes" : ""));
             dStrHexErr((const char *)resp, (ret > 256 ? 256 : ret), -1);
         }
         ret = 0;
@@ -248,28 +252,21 @@ sg_ll_set_tgt_prt_grp(int sg_fd, void * paramp, int param_len, int noisy,
     unsigned char sense_b[SENSE_BUFF_LEN];
     struct sg_pt_base * ptvp;
 
-    stpgCmdBlk[6] = (param_len >> 24) & 0xff;
-    stpgCmdBlk[7] = (param_len >> 16) & 0xff;
-    stpgCmdBlk[8] = (param_len >> 8) & 0xff;
-    stpgCmdBlk[9] = param_len & 0xff;
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
+    sg_put_unaligned_be32((uint32_t)param_len, stpgCmdBlk + 6);
     if (verbose) {
-        fprintf(sg_warnings_strm, "    set target port groups cdb: ");
+        pr2ws("    set target port groups cdb: ");
         for (k = 0; k < MAINTENANCE_OUT_CMDLEN; ++k)
-            fprintf(sg_warnings_strm, "%02x ", stpgCmdBlk[k]);
-        fprintf(sg_warnings_strm, "\n");
+            pr2ws("%02x ", stpgCmdBlk[k]);
+        pr2ws("\n");
         if ((verbose > 1) && paramp && param_len) {
-            fprintf(sg_warnings_strm, "    set target port groups "
-                    "parameter list:\n");
+            pr2ws("    set target port groups parameter list:\n");
             dStrHexErr((const char *)paramp, param_len, -1);
         }
     }
 
     ptvp = construct_scsi_pt_obj();
     if (NULL == ptvp) {
-        fprintf(sg_warnings_strm, "set target port groups: out of "
-                "memory\n");
+        pr2ws("set target port groups: out of memory\n");
         return -1;
     }
     set_scsi_pt_cdb(ptvp, stpgCmdBlk, sizeof(stpgCmdBlk));
@@ -310,32 +307,19 @@ sg_ll_report_referrals(int sg_fd, uint64_t start_llba, int one_seg,
     unsigned char sense_b[SENSE_BUFF_LEN];
     struct sg_pt_base * ptvp;
 
-    repRefCmdBlk[2] = (start_llba >> 56) & 0xff;
-    repRefCmdBlk[3] = (start_llba >> 48) & 0xff;
-    repRefCmdBlk[4] = (start_llba >> 40) & 0xff;
-    repRefCmdBlk[5] = (start_llba >> 32) & 0xff;
-    repRefCmdBlk[6] = (start_llba >> 24) & 0xff;
-    repRefCmdBlk[7] = (start_llba >> 16) & 0xff;
-    repRefCmdBlk[8] = (start_llba >> 8) & 0xff;
-    repRefCmdBlk[9] = start_llba & 0xff;
-    repRefCmdBlk[10] = (mx_resp_len >> 24) & 0xff;
-    repRefCmdBlk[11] = (mx_resp_len >> 16) & 0xff;
-    repRefCmdBlk[12] = (mx_resp_len >> 8) & 0xff;
-    repRefCmdBlk[13] = mx_resp_len & 0xff;
+    sg_put_unaligned_be64(start_llba, repRefCmdBlk + 2);
+    sg_put_unaligned_be32((uint32_t)mx_resp_len, repRefCmdBlk + 10);
     repRefCmdBlk[14] = one_seg & 0x1;
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
     if (verbose) {
-        fprintf(sg_warnings_strm, "    report referrals cdb: ");
+        pr2ws("    report referrals cdb: ");
         for (k = 0; k < SERVICE_ACTION_IN_16_CMDLEN; ++k)
-            fprintf(sg_warnings_strm, "%02x ", repRefCmdBlk[k]);
-        fprintf(sg_warnings_strm, "\n");
+            pr2ws("%02x ", repRefCmdBlk[k]);
+        pr2ws("\n");
     }
 
     ptvp = construct_scsi_pt_obj();
     if (NULL == ptvp) {
-        fprintf(sg_warnings_strm, "report target port groups: out of "
-                "memory\n");
+        pr2ws("report target port groups: out of memory\n");
         return -1;
     }
     set_scsi_pt_cdb(ptvp, repRefCmdBlk, sizeof(repRefCmdBlk));
@@ -359,8 +343,8 @@ sg_ll_report_referrals(int sg_fd, uint64_t start_llba, int one_seg,
         }
     } else {
         if ((verbose > 2) && (ret > 0)) {
-            fprintf(sg_warnings_strm, "    report referrals: response%s\n",
-                    (ret > 256 ? ", first 256 bytes" : ""));
+            pr2ws("    report referrals: response%s\n",
+                  (ret > 256 ? ", first 256 bytes" : ""));
             dStrHexErr((const char *)resp, (ret > 256 ? 256 : ret), -1);
         }
         ret = 0;
@@ -387,19 +371,15 @@ sg_ll_send_diag(int sg_fd, int sf_code, int pf_bit, int sf_bit, int devofl_bit,
 
     senddiagCmdBlk[1] = (unsigned char)((sf_code << 5) | (pf_bit << 4) |
                         (sf_bit << 2) | (devofl_bit << 1) | unitofl_bit);
-    senddiagCmdBlk[3] = (unsigned char)((param_len >> 8) & 0xff);
-    senddiagCmdBlk[4] = (unsigned char)(param_len & 0xff);
+    sg_put_unaligned_be16((uint16_t)param_len, senddiagCmdBlk + 3);
 
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
     if (verbose) {
-        fprintf(sg_warnings_strm, "    Send diagnostic cmd: ");
+        pr2ws("    Send diagnostic cmd: ");
         for (k = 0; k < SEND_DIAGNOSTIC_CMDLEN; ++k)
-            fprintf(sg_warnings_strm, "%02x ", senddiagCmdBlk[k]);
-        fprintf(sg_warnings_strm, "\n");
+            pr2ws("%02x ", senddiagCmdBlk[k]);
+        pr2ws("\n");
         if ((verbose > 1) && paramp && param_len) {
-            fprintf(sg_warnings_strm, "    Send diagnostic parameter "
-                    "list:\n");
+            pr2ws("    Send diagnostic parameter list:\n");
             dStrHexErr((const char *)paramp, param_len, -1);
         }
     }
@@ -410,7 +390,7 @@ sg_ll_send_diag(int sg_fd, int sf_code, int pf_bit, int sf_bit, int devofl_bit,
 
     ptvp = construct_scsi_pt_obj();
     if (NULL == ptvp) {
-        fprintf(sg_warnings_strm, "send diagnostic: out of memory\n");
+        pr2ws("send diagnostic: out of memory\n");
         return -1;
     }
     set_scsi_pt_cdb(ptvp, senddiagCmdBlk, sizeof(senddiagCmdBlk));
@@ -452,22 +432,18 @@ sg_ll_receive_diag(int sg_fd, int pcv, int pg_code, void * resp,
 
     rcvdiagCmdBlk[1] = (unsigned char)(pcv ? 0x1 : 0);
     rcvdiagCmdBlk[2] = (unsigned char)(pg_code);
-    rcvdiagCmdBlk[3] = (unsigned char)((mx_resp_len >> 8) & 0xff);
-    rcvdiagCmdBlk[4] = (unsigned char)(mx_resp_len & 0xff);
+    sg_put_unaligned_be16((uint16_t)mx_resp_len, rcvdiagCmdBlk + 3);
 
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
     if (verbose) {
-        fprintf(sg_warnings_strm, "    Receive diagnostic results cmd: ");
+        pr2ws("    Receive diagnostic results cmd: ");
         for (k = 0; k < RECEIVE_DIAGNOSTICS_CMDLEN; ++k)
-            fprintf(sg_warnings_strm, "%02x ", rcvdiagCmdBlk[k]);
-        fprintf(sg_warnings_strm, "\n");
+            pr2ws("%02x ", rcvdiagCmdBlk[k]);
+        pr2ws("\n");
     }
 
     ptvp = construct_scsi_pt_obj();
     if (NULL == ptvp) {
-        fprintf(sg_warnings_strm, "receive diagnostic results: out of "
-                "memory\n");
+        pr2ws("receive diagnostic results: out of memory\n");
         return -1;
     }
     set_scsi_pt_cdb(ptvp, rcvdiagCmdBlk, sizeof(rcvdiagCmdBlk));
@@ -491,8 +467,8 @@ sg_ll_receive_diag(int sg_fd, int pcv, int pg_code, void * resp,
         }
     } else {
         if ((verbose > 2) && (ret > 0)) {
-            fprintf(sg_warnings_strm, "    receive diagnostic results: "
-                    "response%s\n", (ret > 256 ? ", first 256 bytes" : ""));
+            pr2ws("    receive diagnostic results: response%s\n",
+                  (ret > 256 ? ", first 256 bytes" : ""));
             dStrHexErr((const char *)resp, (ret > 256 ? 256 : ret), -1);
         }
         ret = 0;
@@ -515,24 +491,21 @@ sg_ll_read_defect10(int sg_fd, int req_plist, int req_glist, int dl_format,
 
     rdefCmdBlk[2] = (unsigned char)(((req_plist << 4) & 0x10) |
                          ((req_glist << 3) & 0x8) | (dl_format & 0x7));
-    rdefCmdBlk[7] = (unsigned char)((mx_resp_len >> 8) & 0xff);
-    rdefCmdBlk[8] = (unsigned char)(mx_resp_len & 0xff);
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
+    sg_put_unaligned_be16((uint16_t)mx_resp_len, rdefCmdBlk + 7);
     if (mx_resp_len > 0xffff) {
-        fprintf(sg_warnings_strm, "mx_resp_len too big\n");
+        pr2ws("mx_resp_len too big\n");
         return -1;
     }
     if (verbose) {
-        fprintf(sg_warnings_strm, "    read defect (10) cdb: ");
+        pr2ws("    read defect (10) cdb: ");
         for (k = 0; k < READ_DEFECT10_CMDLEN; ++k)
-            fprintf(sg_warnings_strm, "%02x ", rdefCmdBlk[k]);
-        fprintf(sg_warnings_strm, "\n");
+            pr2ws("%02x ", rdefCmdBlk[k]);
+        pr2ws("\n");
     }
 
     ptvp = construct_scsi_pt_obj();
     if (NULL == ptvp) {
-        fprintf(sg_warnings_strm, "read defect (10): out of memory\n");
+        pr2ws("read defect (10): out of memory\n");
         return -1;
     }
     set_scsi_pt_cdb(ptvp, rdefCmdBlk, sizeof(rdefCmdBlk));
@@ -555,8 +528,8 @@ sg_ll_read_defect10(int sg_fd, int req_plist, int req_glist, int dl_format,
         }
     } else {
         if ((verbose > 2) && (ret > 0)) {
-            fprintf(sg_warnings_strm, "    read defect (10): response%s\n",
-                    (ret > 256 ? ", first 256 bytes" : ""));
+            pr2ws("    read defect (10): response%s\n",
+                  (ret > 256 ? ", first 256 bytes" : ""));
             dStrHexErr((const char *)resp, (ret > 256 ? 256 : ret), -1);
         }
         ret = 0;
@@ -578,23 +551,17 @@ sg_ll_read_media_serial_num(int sg_fd, void * resp, int mx_resp_len,
     unsigned char sense_b[SENSE_BUFF_LEN];
     struct sg_pt_base * ptvp;
 
-    rmsnCmdBlk[6] = (mx_resp_len >> 24) & 0xff;
-    rmsnCmdBlk[7] = (mx_resp_len >> 16) & 0xff;
-    rmsnCmdBlk[8] = (mx_resp_len >> 8) & 0xff;
-    rmsnCmdBlk[9] = mx_resp_len & 0xff;
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
+    sg_put_unaligned_be32((uint32_t)mx_resp_len, rmsnCmdBlk + 6);
     if (verbose) {
-        fprintf(sg_warnings_strm, "    read media serial number cdb: ");
+        pr2ws("    read media serial number cdb: ");
         for (k = 0; k < SERVICE_ACTION_IN_12_CMDLEN; ++k)
-            fprintf(sg_warnings_strm, "%02x ", rmsnCmdBlk[k]);
-        fprintf(sg_warnings_strm, "\n");
+            pr2ws("%02x ", rmsnCmdBlk[k]);
+        pr2ws("\n");
     }
 
     ptvp = construct_scsi_pt_obj();
     if (NULL == ptvp) {
-        fprintf(sg_warnings_strm, "read media serial number: out of "
-                "memory\n");
+        pr2ws("read media serial number: out of memory\n");
         return -1;
     }
     set_scsi_pt_cdb(ptvp, rmsnCmdBlk, sizeof(rmsnCmdBlk));
@@ -618,8 +585,8 @@ sg_ll_read_media_serial_num(int sg_fd, void * resp, int mx_resp_len,
         }
     } else {
         if ((verbose > 2) && (ret > 0)) {
-            fprintf(sg_warnings_strm, "    read media serial number: respon"
-                    "se%s\n", (ret > 256 ? ", first 256 bytes" : ""));
+            pr2ws("    read media serial number: response%s\n",
+                  (ret > 256 ? ", first 256 bytes" : ""));
             dStrHexErr((const char *)resp, (ret > 256 ? 256 : ret), -1);
         }
         ret = 0;
@@ -642,25 +609,19 @@ sg_ll_report_id_info(int sg_fd, int itype, void * resp, int max_resp_len,
     unsigned char sense_b[SENSE_BUFF_LEN];
     struct sg_pt_base * ptvp;
 
-    riiCmdBlk[6] = (max_resp_len >> 24) & 0xff;
-    riiCmdBlk[7] = (max_resp_len >> 16) & 0xff;
-    riiCmdBlk[8] = (max_resp_len >> 8) & 0xff;
-    riiCmdBlk[9] = max_resp_len & 0xff;
+    sg_put_unaligned_be32((uint32_t)max_resp_len, riiCmdBlk + 6);
     riiCmdBlk[10] |= (itype << 1) & 0xfe;
 
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
     if (verbose) {
-        fprintf(sg_warnings_strm, "    Report identifying information cdb: ");
+        pr2ws("    Report identifying information cdb: ");
         for (k = 0; k < MAINTENANCE_IN_CMDLEN; ++k)
-            fprintf(sg_warnings_strm, "%02x ", riiCmdBlk[k]);
-        fprintf(sg_warnings_strm, "\n");
+            pr2ws("%02x ", riiCmdBlk[k]);
+        pr2ws("\n");
     }
 
     ptvp = construct_scsi_pt_obj();
     if (NULL == ptvp) {
-        fprintf(sg_warnings_strm, "report identifying information: out of "
-                "memory\n");
+        pr2ws("report identifying information: out of memory\n");
         return -1;
     }
     set_scsi_pt_cdb(ptvp, riiCmdBlk, sizeof(riiCmdBlk));
@@ -684,8 +645,8 @@ sg_ll_report_id_info(int sg_fd, int itype, void * resp, int max_resp_len,
         }
     } else {
         if ((verbose > 2) && (ret > 0)) {
-            fprintf(sg_warnings_strm, "    report identifying information: "
-                    "response%s\n", (ret > 256 ? ", first 256 bytes" : ""));
+            pr2ws("    report identifying information: response%s\n",
+                  (ret > 256 ? ", first 256 bytes" : ""));
             dStrHexErr((const char *)resp, (ret > 256 ? 256 : ret), -1);
         }
         ret = 0;
@@ -708,29 +669,22 @@ sg_ll_set_id_info(int sg_fd, int itype, void * paramp, int param_len,
     unsigned char sense_b[SENSE_BUFF_LEN];
     struct sg_pt_base * ptvp;
 
-    siiCmdBlk[6] = (param_len >> 24) & 0xff;
-    siiCmdBlk[7] = (param_len >> 16) & 0xff;
-    siiCmdBlk[8] = (param_len >> 8) & 0xff;
-    siiCmdBlk[9] = param_len & 0xff;
+    sg_put_unaligned_be32((uint32_t)param_len, siiCmdBlk + 6);
     siiCmdBlk[10] |= (itype << 1) & 0xfe;
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
     if (verbose) {
-        fprintf(sg_warnings_strm, "    Set identifying information cdb: ");
+        pr2ws("    Set identifying information cdb: ");
         for (k = 0; k < MAINTENANCE_OUT_CMDLEN; ++k)
-            fprintf(sg_warnings_strm, "%02x ", siiCmdBlk[k]);
-        fprintf(sg_warnings_strm, "\n");
+            pr2ws("%02x ", siiCmdBlk[k]);
+        pr2ws("\n");
         if ((verbose > 1) && paramp && param_len) {
-            fprintf(sg_warnings_strm, "    Set identifying information "
-                    "parameter list:\n");
+            pr2ws("    Set identifying information parameter list:\n");
             dStrHexErr((const char *)paramp, param_len, -1);
         }
     }
 
     ptvp = construct_scsi_pt_obj();
     if (NULL == ptvp) {
-        fprintf(sg_warnings_strm, "Set identifying information: out of "
-                "memory\n");
+        pr2ws("Set identifying information: out of memory\n");
         return -1;
     }
     set_scsi_pt_cdb(ptvp, siiCmdBlk, sizeof(siiCmdBlk));
@@ -765,6 +719,19 @@ sg_ll_format_unit(int sg_fd, int fmtpinfo, int longlist, int fmtdata,
                   int cmplst, int dlist_format, int timeout_secs,
                   void * paramp, int param_len, int noisy, int verbose)
 {
+    return sg_ll_format_unit2(sg_fd, fmtpinfo, longlist, fmtdata, cmplst,
+                              dlist_format, 0, timeout_secs, paramp,
+                              param_len, noisy, verbose);
+}
+
+/* Invokes a FORMAT UNIT (SBC-4) command. Return of 0 -> success,
+ * various SG_LIB_CAT_* positive values or -1 -> other errors.
+ * FFMT field added in sbc4r10 [20160121] */
+int
+sg_ll_format_unit2(int sg_fd, int fmtpinfo, int longlist, int fmtdata,
+                   int cmplst, int dlist_format, int ffmt, int timeout_secs,
+                   void * paramp, int param_len, int noisy, int verbose)
+{
     int k, res, ret, sense_cat, tmout;
     unsigned char fuCmdBlk[FORMAT_UNIT_CMDLEN] =
                 {FORMAT_UNIT_CMD, 0, 0, 0, 0, 0};
@@ -781,23 +748,23 @@ sg_ll_format_unit(int sg_fd, int fmtpinfo, int longlist, int fmtdata,
         fuCmdBlk[1] |= 0x8;
     if (dlist_format)
         fuCmdBlk[1] |= (dlist_format & 0x7);
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
+    if (ffmt)
+        fuCmdBlk[4] |= (ffmt & 0x3);
     tmout = (timeout_secs > 0) ? timeout_secs : DEF_PT_TIMEOUT;
     if (verbose) {
-        fprintf(sg_warnings_strm, "    format cdb: ");
+        pr2ws("    format unit cdb: ");
         for (k = 0; k < 6; ++k)
-            fprintf(sg_warnings_strm, "%02x ", fuCmdBlk[k]);
-        fprintf(sg_warnings_strm, "\n");
+            pr2ws("%02x ", fuCmdBlk[k]);
+        pr2ws("\n");
     }
     if ((verbose > 1) && (param_len > 0)) {
-        fprintf(sg_warnings_strm, "    format parameter list:\n");
+        pr2ws("    format parameter list:\n");
         dStrHexErr((const char *)paramp, param_len, -1);
     }
 
     ptvp = construct_scsi_pt_obj();
     if (NULL == ptvp) {
-        fprintf(sg_warnings_strm, "format unit: out of memory\n");
+        pr2ws("format unit: out of memory\n");
         return -1;
     }
     set_scsi_pt_cdb(ptvp, fuCmdBlk, sizeof(fuCmdBlk));
@@ -839,22 +806,20 @@ sg_ll_reassign_blocks(int sg_fd, int longlba, int longlist, void * paramp,
 
     reassCmdBlk[1] = (unsigned char)(((longlba << 1) & 0x2) |
                      (longlist & 0x1));
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
     if (verbose) {
-        fprintf(sg_warnings_strm, "    reassign blocks cdb: ");
+        pr2ws("    reassign blocks cdb: ");
         for (k = 0; k < REASSIGN_BLKS_CMDLEN; ++k)
-            fprintf(sg_warnings_strm, "%02x ", reassCmdBlk[k]);
-        fprintf(sg_warnings_strm, "\n");
+            pr2ws("%02x ", reassCmdBlk[k]);
+        pr2ws("\n");
     }
     if (verbose > 1) {
-        fprintf(sg_warnings_strm, "    reassign blocks parameter list\n");
+        pr2ws("    reassign blocks parameter list\n");
         dStrHexErr((const char *)paramp, param_len, -1);
     }
 
     ptvp = construct_scsi_pt_obj();
     if (NULL == ptvp) {
-        fprintf(sg_warnings_strm, "reassign blocks: out of memory\n");
+        pr2ws("reassign blocks: out of memory\n");
         return -1;
     }
     set_scsi_pt_cdb(ptvp, reassCmdBlk, sizeof(reassCmdBlk));
@@ -897,22 +862,18 @@ sg_ll_persistent_reserve_in(int sg_fd, int rq_servact, void * resp,
 
     if (rq_servact > 0)
         prinCmdBlk[1] = (unsigned char)(rq_servact & 0x1f);
-    prinCmdBlk[7] = (unsigned char)((mx_resp_len >> 8) & 0xff);
-    prinCmdBlk[8] = (unsigned char)(mx_resp_len & 0xff);
+    sg_put_unaligned_be16((uint16_t)mx_resp_len, prinCmdBlk + 7);
 
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
     if (verbose) {
-        fprintf(sg_warnings_strm, "    Persistent Reservation In cmd: ");
+        pr2ws("    Persistent Reservation In cmd: ");
         for (k = 0; k < PERSISTENT_RESERVE_IN_CMDLEN; ++k)
-            fprintf(sg_warnings_strm, "%02x ", prinCmdBlk[k]);
-        fprintf(sg_warnings_strm, "\n");
+            pr2ws("%02x ", prinCmdBlk[k]);
+        pr2ws("\n");
     }
 
     ptvp = construct_scsi_pt_obj();
     if (NULL == ptvp) {
-        fprintf(sg_warnings_strm, "persistent reservation in: out of "
-                "memory\n");
+        pr2ws("persistent reservation in: out of memory\n");
         return -1;
     }
     set_scsi_pt_cdb(ptvp, prinCmdBlk, sizeof(prinCmdBlk));
@@ -936,8 +897,8 @@ sg_ll_persistent_reserve_in(int sg_fd, int rq_servact, void * resp,
         }
     } else {
         if ((verbose > 2) && (ret > 0)) {
-            fprintf(sg_warnings_strm, "    persistent reserve in: "
-                    "response%s\n", (ret > 256 ? ", first 256 bytes" : ""));
+            pr2ws("    persistent reserve in: response%s\n",
+                  (ret > 256 ? ", first 256 bytes" : ""));
             dStrHexErr((const char *)resp, (ret > 256 ? 256 : ret), -1);
         }
         ret = 0;
@@ -963,26 +924,22 @@ sg_ll_persistent_reserve_out(int sg_fd, int rq_servact, int rq_scope,
     if (rq_servact > 0)
         proutCmdBlk[1] = (unsigned char)(rq_servact & 0x1f);
     proutCmdBlk[2] = (((rq_scope & 0xf) << 4) | (rq_type & 0xf));
-    proutCmdBlk[7] = (unsigned char)((param_len >> 8) & 0xff);
-    proutCmdBlk[8] = (unsigned char)(param_len & 0xff);
+    sg_put_unaligned_be16((uint16_t)param_len, proutCmdBlk + 7);
 
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
     if (verbose) {
-        fprintf(sg_warnings_strm, "    Persistent Reservation Out cmd: ");
+        pr2ws("    Persistent Reservation Out cmd: ");
         for (k = 0; k < PERSISTENT_RESERVE_OUT_CMDLEN; ++k)
-            fprintf(sg_warnings_strm, "%02x ", proutCmdBlk[k]);
-        fprintf(sg_warnings_strm, "\n");
+            pr2ws("%02x ", proutCmdBlk[k]);
+        pr2ws("\n");
         if (verbose > 1) {
-            fprintf(sg_warnings_strm, "    Persistent Reservation Out "
-                    "parameters:\n");
+            pr2ws("    Persistent Reservation Out parameters:\n");
             dStrHexErr((const char *)paramp, param_len, 0);
         }
     }
 
     ptvp = construct_scsi_pt_obj();
     if (NULL == ptvp) {
-        fprintf(sg_warnings_strm, "persistent reserve out: out of memory\n");
+        pr2ws("persistent reserve out: out of memory\n");
         return -1;
     }
     set_scsi_pt_cdb(ptvp, proutCmdBlk, sizeof(proutCmdBlk));
@@ -1048,24 +1005,18 @@ sg_ll_read_long10(int sg_fd, int pblock, int correct, unsigned int lba,
     if (correct)
         readLongCmdBlk[1] |= 0x2;
 
-    readLongCmdBlk[2] = (lba >> 24) & 0xff;
-    readLongCmdBlk[3] = (lba >> 16) & 0xff;
-    readLongCmdBlk[4] = (lba >> 8) & 0xff;
-    readLongCmdBlk[5] = lba & 0xff;
-    readLongCmdBlk[7] = (xfer_len >> 8) & 0xff;
-    readLongCmdBlk[8] = xfer_len & 0xff;
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
+    sg_put_unaligned_be32((uint32_t)lba, readLongCmdBlk + 2);
+    sg_put_unaligned_be16((uint16_t)xfer_len, readLongCmdBlk + 7);
     if (verbose) {
-        fprintf(sg_warnings_strm, "    Read Long (10) cmd: ");
+        pr2ws("    Read Long (10) cmd: ");
         for (k = 0; k < READ_LONG10_CMDLEN; ++k)
-            fprintf(sg_warnings_strm, "%02x ", readLongCmdBlk[k]);
-        fprintf(sg_warnings_strm, "\n");
+            pr2ws("%02x ", readLongCmdBlk[k]);
+        pr2ws("\n");
     }
 
     ptvp = construct_scsi_pt_obj();
     if (NULL == ptvp) {
-        fprintf(sg_warnings_strm, "read long (10): out of memory\n");
+        pr2ws("read long (10): out of memory\n");
         return -1;
     }
     set_scsi_pt_cdb(ptvp, readLongCmdBlk, sizeof(readLongCmdBlk));
@@ -1096,8 +1047,8 @@ sg_ll_read_long10(int sg_fd, int pblock, int correct, unsigned int lba,
                     ret = SG_LIB_CAT_ILLEGAL_REQ_WITH_INFO;
                 } else {
                     if (verbose > 1)
-                        fprintf(sg_warnings_strm, "  info field: 0x%" PRIx64
-                                ",  valid: %d, ili: %d\n", ull, valid, ili);
+                        pr2ws("  info field: 0x%" PRIx64 ",  valid: %d, "
+                              "ili: %d\n", ull, valid, ili);
                     ret = SG_LIB_CAT_ILLEGAL_REQ;
                 }
             }
@@ -1108,8 +1059,8 @@ sg_ll_read_long10(int sg_fd, int pblock, int correct, unsigned int lba,
         }
     } else {
         if ((verbose > 2) && (ret > 0)) {
-            fprintf(sg_warnings_strm, "    read long(10): response%s\n",
-                    (ret > 256 ? ", first 256 bytes" : ""));
+            pr2ws("    read long(10): response%s\n",
+                  (ret > 256 ? ", first 256 bytes" : ""));
             dStrHexErr((const char *)resp, (ret > 256 ? 256 : ret), -1);
         }
         ret = 0;
@@ -1139,28 +1090,18 @@ sg_ll_read_long16(int sg_fd, int pblock, int correct, uint64_t llba,
     if (correct)
         readLongCmdBlk[14] |= 0x1;
 
-    readLongCmdBlk[2] = (llba >> 56) & 0xff;
-    readLongCmdBlk[3] = (llba >> 48) & 0xff;
-    readLongCmdBlk[4] = (llba >> 40) & 0xff;
-    readLongCmdBlk[5] = (llba >> 32) & 0xff;
-    readLongCmdBlk[6] = (llba >> 24) & 0xff;
-    readLongCmdBlk[7] = (llba >> 16) & 0xff;
-    readLongCmdBlk[8] = (llba >> 8) & 0xff;
-    readLongCmdBlk[9] = llba & 0xff;
-    readLongCmdBlk[12] = (xfer_len >> 8) & 0xff;
-    readLongCmdBlk[13] = xfer_len & 0xff;
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
+    sg_put_unaligned_be64(llba, readLongCmdBlk + 2);
+    sg_put_unaligned_be16((uint16_t)xfer_len, readLongCmdBlk + 12);
     if (verbose) {
-        fprintf(sg_warnings_strm, "    Read Long (16) cmd: ");
+        pr2ws("    Read Long (16) cmd: ");
         for (k = 0; k < SERVICE_ACTION_IN_16_CMDLEN; ++k)
-            fprintf(sg_warnings_strm, "%02x ", readLongCmdBlk[k]);
-        fprintf(sg_warnings_strm, "\n");
+            pr2ws("%02x ", readLongCmdBlk[k]);
+        pr2ws("\n");
     }
 
     ptvp = construct_scsi_pt_obj();
     if (NULL == ptvp) {
-        fprintf(sg_warnings_strm, "read long (16): out of memory\n");
+        pr2ws("read long (16): out of memory\n");
         return -1;
     }
     set_scsi_pt_cdb(ptvp, readLongCmdBlk, sizeof(readLongCmdBlk));
@@ -1191,8 +1132,8 @@ sg_ll_read_long16(int sg_fd, int pblock, int correct, uint64_t llba,
                     ret = SG_LIB_CAT_ILLEGAL_REQ_WITH_INFO;
                 } else {
                     if (verbose > 1)
-                        fprintf(sg_warnings_strm, "  info field: 0x%" PRIx64
-                                ",  valid: %d, ili: %d\n", ull, valid, ili);
+                        pr2ws("  info field: 0x%" PRIx64 ",  valid: %d, "
+                              "ili: %d\n", ull, valid, ili);
                     ret = SG_LIB_CAT_ILLEGAL_REQ;
                 }
             }
@@ -1203,8 +1144,8 @@ sg_ll_read_long16(int sg_fd, int pblock, int correct, uint64_t llba,
         }
     } else {
         if ((verbose > 2) && (ret > 0)) {
-            fprintf(sg_warnings_strm, "    read long(16): response%s\n",
-                    (ret > 256 ? ", first 256 bytes" : ""));
+            pr2ws("    read long(16): response%s\n",
+                  (ret > 256 ? ", first 256 bytes" : ""));
             dStrHexErr((const char *)resp, (ret > 256 ? 256 : ret), -1);
         }
         ret = 0;
@@ -1235,24 +1176,18 @@ sg_ll_write_long10(int sg_fd, int cor_dis, int wr_uncor, int pblock,
     if (pblock)
         writeLongCmdBlk[1] |= 0x20;
 
-    writeLongCmdBlk[2] = (lba >> 24) & 0xff;
-    writeLongCmdBlk[3] = (lba >> 16) & 0xff;
-    writeLongCmdBlk[4] = (lba >> 8) & 0xff;
-    writeLongCmdBlk[5] = lba & 0xff;
-    writeLongCmdBlk[7] = (xfer_len >> 8) & 0xff;
-    writeLongCmdBlk[8] = xfer_len & 0xff;
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
+    sg_put_unaligned_be32((uint32_t)lba, writeLongCmdBlk + 2);
+    sg_put_unaligned_be16((uint16_t)xfer_len, writeLongCmdBlk + 7);
     if (verbose) {
-        fprintf(sg_warnings_strm, "    Write Long (10) cmd: ");
+        pr2ws("    Write Long (10) cmd: ");
         for (k = 0; k < (int)sizeof(writeLongCmdBlk); ++k)
-            fprintf(sg_warnings_strm, "%02x ", writeLongCmdBlk[k]);
-        fprintf(sg_warnings_strm, "\n");
+            pr2ws("%02x ", writeLongCmdBlk[k]);
+        pr2ws("\n");
     }
 
     ptvp = construct_scsi_pt_obj();
     if (NULL == ptvp) {
-        fprintf(sg_warnings_strm, "write long(10): out of memory\n");
+        pr2ws("write long(10): out of memory\n");
         return -1;
     }
     set_scsi_pt_cdb(ptvp, writeLongCmdBlk, sizeof(writeLongCmdBlk));
@@ -1283,8 +1218,8 @@ sg_ll_write_long10(int sg_fd, int cor_dis, int wr_uncor, int pblock,
                     ret = SG_LIB_CAT_ILLEGAL_REQ_WITH_INFO;
                 } else {
                     if (verbose > 1)
-                        fprintf(sg_warnings_strm, "  info field: 0x%" PRIx64
-                                ",  valid: %d, ili: %d\n", ull, valid, ili);
+                        pr2ws("  info field: 0x%" PRIx64 ",  valid: %d, "
+                              "ili: %d\n", ull, valid, ili);
                     ret = SG_LIB_CAT_ILLEGAL_REQ;
                 }
             }
@@ -1323,28 +1258,18 @@ sg_ll_write_long16(int sg_fd, int cor_dis, int wr_uncor, int pblock,
     if (pblock)
         writeLongCmdBlk[1] |= 0x20;
 
-    writeLongCmdBlk[2] = (llba >> 56) & 0xff;
-    writeLongCmdBlk[3] = (llba >> 48) & 0xff;
-    writeLongCmdBlk[4] = (llba >> 40) & 0xff;
-    writeLongCmdBlk[5] = (llba >> 32) & 0xff;
-    writeLongCmdBlk[6] = (llba >> 24) & 0xff;
-    writeLongCmdBlk[7] = (llba >> 16) & 0xff;
-    writeLongCmdBlk[8] = (llba >> 8) & 0xff;
-    writeLongCmdBlk[9] = llba & 0xff;
-    writeLongCmdBlk[12] = (xfer_len >> 8) & 0xff;
-    writeLongCmdBlk[13] = xfer_len & 0xff;
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
+    sg_put_unaligned_be64(llba, writeLongCmdBlk + 2);
+    sg_put_unaligned_be16((uint16_t)xfer_len, writeLongCmdBlk + 12);
     if (verbose) {
-        fprintf(sg_warnings_strm, "    Write Long (16) cmd: ");
+        pr2ws("    Write Long (16) cmd: ");
         for (k = 0; k < SERVICE_ACTION_OUT_16_CMDLEN; ++k)
-            fprintf(sg_warnings_strm, "%02x ", writeLongCmdBlk[k]);
-        fprintf(sg_warnings_strm, "\n");
+            pr2ws("%02x ", writeLongCmdBlk[k]);
+        pr2ws("\n");
     }
 
     ptvp = construct_scsi_pt_obj();
     if (NULL == ptvp) {
-        fprintf(sg_warnings_strm, "write long(16): out of memory\n");
+        pr2ws("write long(16): out of memory\n");
         return -1;
     }
     set_scsi_pt_cdb(ptvp, writeLongCmdBlk, sizeof(writeLongCmdBlk));
@@ -1375,8 +1300,8 @@ sg_ll_write_long16(int sg_fd, int cor_dis, int wr_uncor, int pblock,
                     ret = SG_LIB_CAT_ILLEGAL_REQ_WITH_INFO;
                 } else {
                     if (verbose > 1)
-                        fprintf(sg_warnings_strm, "  info field: 0x%" PRIx64
-                                ",  valid: %d, ili: %d\n", ull, valid, ili);
+                        pr2ws("  info field: 0x%" PRIx64 ",  valid: %d, "
+                              "ili: %d\n", ull, valid, ili);
                     ret = SG_LIB_CAT_ILLEGAL_REQ;
                 }
             }
@@ -1411,29 +1336,23 @@ sg_ll_verify10(int sg_fd, int vrprotect, int dpo, int bytchk,
     /* N.B. BYTCHK field expanded to 2 bits sbc3r34 */
     vCmdBlk[1] = ((vrprotect & 0x7) << 5) | ((dpo & 0x1) << 4) |
                  ((bytchk & 0x3) << 1) ;
-    vCmdBlk[2] = (unsigned char)((lba >> 24) & 0xff);
-    vCmdBlk[3] = (unsigned char)((lba >> 16) & 0xff);
-    vCmdBlk[4] = (unsigned char)((lba >> 8) & 0xff);
-    vCmdBlk[5] = (unsigned char)(lba & 0xff);
-    vCmdBlk[7] = (unsigned char)((veri_len >> 8) & 0xff);
-    vCmdBlk[8] = (unsigned char)(veri_len & 0xff);
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
+    sg_put_unaligned_be32((uint32_t)lba, vCmdBlk + 2);
+    sg_put_unaligned_be16((uint16_t)veri_len, vCmdBlk + 7);
     if (verbose > 1) {
-        fprintf(sg_warnings_strm, "    Verify(10) cdb: ");
+        pr2ws("    Verify(10) cdb: ");
         for (k = 0; k < VERIFY10_CMDLEN; ++k)
-            fprintf(sg_warnings_strm, "%02x ", vCmdBlk[k]);
-        fprintf(sg_warnings_strm, "\n");
+            pr2ws("%02x ", vCmdBlk[k]);
+        pr2ws("\n");
         if ((verbose > 3) && bytchk && data_out && (data_out_len > 0)) {
             k = data_out_len > 4104 ? 4104 : data_out_len;
-            fprintf(sg_warnings_strm, "    data_out buffer%s\n",
-                    (data_out_len > 4104 ? ", first 4104 bytes" : ""));
+            pr2ws("    data_out buffer%s\n",
+                  (data_out_len > 4104 ? ", first 4104 bytes" : ""));
             dStrHexErr((const char *)data_out, k, verbose < 5);
         }
     }
     ptvp = construct_scsi_pt_obj();
     if (NULL == ptvp) {
-        fprintf(sg_warnings_strm, "verify (10): out of memory\n");
+        pr2ws("verify (10): out of memory\n");
         return -1;
     }
     set_scsi_pt_cdb(ptvp, vCmdBlk, sizeof(vCmdBlk));
@@ -1495,36 +1414,24 @@ sg_ll_verify16(int sg_fd, int vrprotect, int dpo, int bytchk, uint64_t llba,
     /* N.B. BYTCHK field expanded to 2 bits sbc3r34 */
     vCmdBlk[1] = ((vrprotect & 0x7) << 5) | ((dpo & 0x1) << 4) |
                  ((bytchk & 0x3) << 1) ;
-    vCmdBlk[2] = (llba >> 56) & 0xff;
-    vCmdBlk[3] = (llba >> 48) & 0xff;
-    vCmdBlk[4] = (llba >> 40) & 0xff;
-    vCmdBlk[5] = (llba >> 32) & 0xff;
-    vCmdBlk[6] = (llba >> 24) & 0xff;
-    vCmdBlk[7] = (llba >> 16) & 0xff;
-    vCmdBlk[8] = (llba >> 8) & 0xff;
-    vCmdBlk[9] = llba & 0xff;
-    vCmdBlk[10] = (veri_len >> 24) & 0xff;
-    vCmdBlk[11] = (veri_len >> 16) & 0xff;
-    vCmdBlk[12] = (veri_len >> 8) & 0xff;
-    vCmdBlk[13] = veri_len & 0xff;
+    sg_put_unaligned_be64(llba, vCmdBlk + 2);
+    sg_put_unaligned_be32((uint32_t)veri_len, vCmdBlk + 10);
     vCmdBlk[14] = group_num & 0x1f;
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
     if (verbose > 1) {
-        fprintf(sg_warnings_strm, "    Verify(16) cdb: ");
+        pr2ws("    Verify(16) cdb: ");
         for (k = 0; k < VERIFY16_CMDLEN; ++k)
-            fprintf(sg_warnings_strm, "%02x ", vCmdBlk[k]);
-        fprintf(sg_warnings_strm, "\n");
+            pr2ws("%02x ", vCmdBlk[k]);
+        pr2ws("\n");
         if ((verbose > 3) && bytchk && data_out && (data_out_len > 0)) {
             k = data_out_len > 4104 ? 4104 : data_out_len;
-            fprintf(sg_warnings_strm, "    data_out buffer%s\n",
-                    (data_out_len > 4104 ? ", first 4104 bytes" : ""));
+            pr2ws("    data_out buffer%s\n",
+                  (data_out_len > 4104 ? ", first 4104 bytes" : ""));
             dStrHexErr((const char *)data_out, k, verbose < 5);
         }
     }
     ptvp = construct_scsi_pt_obj();
     if (NULL == ptvp) {
-        fprintf(sg_warnings_strm, "verify (16): out of memory\n");
+        pr2ws("verify (16): out of memory\n");
         return -1;
     }
     set_scsi_pt_cdb(ptvp, vCmdBlk, sizeof(vCmdBlk));
@@ -1605,16 +1512,14 @@ sg_ll_ata_pt(int sg_fd, const unsigned char * cdbp, int cdb_len,
     int ret = -1;
 
     b[0] = '\0';
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
     cnamep = (12 == cdb_len) ?
              "ATA pass through (12)" : "ATA pass through (16)";
     if ((NULL == cdbp) || ((12 != cdb_len) && (16 != cdb_len))) {
         if (verbose) {
             if (NULL == cdbp)
-                fprintf(sg_warnings_strm, "%s NULL cdb pointer\n", cnamep);
+                pr2ws("%s NULL cdb pointer\n", cnamep);
             else
-                fprintf(sg_warnings_strm, "cdb_len must be 12 or 16\n");
+                pr2ws("cdb_len must be 12 or 16\n");
         }
         return -1;
     }
@@ -1631,14 +1536,14 @@ sg_ll_ata_pt(int sg_fd, const unsigned char * cdbp, int cdb_len,
     else
         memcpy(aptCmdBlk + 1, cdbp + 1, ((cdb_len > 15) ? 14 : (cdb_len - 1)));
     if (verbose) {
-        fprintf(sg_warnings_strm, "    %s cdb: ", cnamep);
+        pr2ws("    %s cdb: ", cnamep);
         for (k = 0; k < cdb_len; ++k)
-            fprintf(sg_warnings_strm, "%02x ", aptCmdBlk[k]);
-        fprintf(sg_warnings_strm, "\n");
+            pr2ws("%02x ", aptCmdBlk[k]);
+        pr2ws("\n");
     }
     ptvp = construct_scsi_pt_obj();
     if (NULL == ptvp) {
-        fprintf(sg_warnings_strm, "%s: out of memory\n", cnamep);
+        pr2ws("%s: out of memory\n", cnamep);
         return -1;
     }
     set_scsi_pt_cdb(ptvp, aptCmdBlk, cdb_len);
@@ -1654,20 +1559,19 @@ sg_ll_ata_pt(int sg_fd, const unsigned char * cdbp, int cdb_len,
                      verbose);
     if (SCSI_PT_DO_BAD_PARAMS == res) {
         if (verbose)
-            fprintf(sg_warnings_strm, "%s: bad parameters\n", cnamep);
+            pr2ws("%s: bad parameters\n", cnamep);
         goto out;
     } else if (SCSI_PT_DO_TIMEOUT == res) {
         if (verbose)
-            fprintf(sg_warnings_strm, "%s: timeout\n", cnamep);
+            pr2ws("%s: timeout\n", cnamep);
         goto out;
     } else if (res > 2) {
         if (verbose)
-            fprintf(sg_warnings_strm, "%s: do_scsi_pt: errno=%d\n",
-                    cnamep, -res);
+            pr2ws("%s: do_scsi_pt: errno=%d\n", cnamep, -res);
     }
 
     if ((verbose > 2) && ((duration = get_scsi_pt_duration_ms(ptvp)) >= 0))
-        fprintf(sg_warnings_strm, "      duration=%d ms\n", duration);
+        pr2ws("      duration=%d ms\n", duration);
 
     switch (get_scsi_pt_result_category(ptvp)) {
     case SCSI_PT_RESULT_GOOD:
@@ -1708,19 +1612,18 @@ sg_ll_ata_pt(int sg_fd, const unsigned char * cdbp, int cdb_len,
         break;
     case SCSI_PT_RESULT_TRANSPORT_ERR:
         if (verbose)
-            fprintf(sg_warnings_strm, "%s: transport error: %s\n",
-                    cnamep, get_scsi_pt_transport_err_str(ptvp, sizeof(b) ,
-                                                          b));
+            pr2ws("%s: transport error: %s\n", cnamep,
+                  get_scsi_pt_transport_err_str(ptvp, sizeof(b), b));
         break;
     case SCSI_PT_RESULT_OS_ERR:
         if (verbose)
-            fprintf(sg_warnings_strm, "%s: os error: %s\n",
-                    cnamep, get_scsi_pt_os_err_str(ptvp, sizeof(b) , b));
+            pr2ws("%s: os error: %s\n", cnamep,
+                  get_scsi_pt_os_err_str(ptvp, sizeof(b) , b));
         break;
     default:
         if (verbose)
-            fprintf(sg_warnings_strm, "%s: unknown pt_result_category=%d\n",
-                    cnamep, get_scsi_pt_result_category(ptvp));
+            pr2ws("%s: unknown pt_result_category=%d\n", cnamep,
+                  get_scsi_pt_result_category(ptvp));
         break;
     }
 
@@ -1743,24 +1646,18 @@ sg_ll_read_buffer(int sg_fd, int mode, int buffer_id, int buffer_offset,
 
     rbufCmdBlk[1] = (unsigned char)(mode & 0x1f);
     rbufCmdBlk[2] = (unsigned char)(buffer_id & 0xff);
-    rbufCmdBlk[3] = (unsigned char)((buffer_offset >> 16) & 0xff);
-    rbufCmdBlk[4] = (unsigned char)((buffer_offset >> 8) & 0xff);
-    rbufCmdBlk[5] = (unsigned char)(buffer_offset & 0xff);
-    rbufCmdBlk[6] = (unsigned char)((mx_resp_len >> 16) & 0xff);
-    rbufCmdBlk[7] = (unsigned char)((mx_resp_len >> 8) & 0xff);
-    rbufCmdBlk[8] = (unsigned char)(mx_resp_len & 0xff);
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
+    sg_put_unaligned_be24((uint32_t)buffer_offset, rbufCmdBlk + 3);
+    sg_put_unaligned_be24((uint32_t)mx_resp_len, rbufCmdBlk + 6);
     if (verbose) {
-        fprintf(sg_warnings_strm, "    read buffer cdb: ");
+        pr2ws("    read buffer cdb: ");
         for (k = 0; k < READ_BUFFER_CMDLEN; ++k)
-            fprintf(sg_warnings_strm, "%02x ", rbufCmdBlk[k]);
-        fprintf(sg_warnings_strm, "\n");
+            pr2ws("%02x ", rbufCmdBlk[k]);
+        pr2ws("\n");
     }
 
     ptvp = construct_scsi_pt_obj();
     if (NULL == ptvp) {
-        fprintf(sg_warnings_strm, "read buffer: out of memory\n");
+        pr2ws("read buffer: out of memory\n");
         return -1;
     }
     set_scsi_pt_cdb(ptvp, rbufCmdBlk, sizeof(rbufCmdBlk));
@@ -1783,8 +1680,8 @@ sg_ll_read_buffer(int sg_fd, int mode, int buffer_id, int buffer_offset,
         }
     } else {
         if ((verbose > 2) && (ret > 0)) {
-            fprintf(sg_warnings_strm, "    read buffer: response%s\n",
-                    (ret > 256 ? ", first 256 bytes" : ""));
+            pr2ws("    read buffer: response%s\n",
+                  (ret > 256 ? ", first 256 bytes" : ""));
             dStrHexErr((const char *)resp, (ret > 256 ? 256 : ret), -1);
         }
         ret = 0;
@@ -1807,30 +1704,24 @@ sg_ll_write_buffer(int sg_fd, int mode, int buffer_id, int buffer_offset,
 
     wbufCmdBlk[1] = (unsigned char)(mode & 0x1f);
     wbufCmdBlk[2] = (unsigned char)(buffer_id & 0xff);
-    wbufCmdBlk[3] = (unsigned char)((buffer_offset >> 16) & 0xff);
-    wbufCmdBlk[4] = (unsigned char)((buffer_offset >> 8) & 0xff);
-    wbufCmdBlk[5] = (unsigned char)(buffer_offset & 0xff);
-    wbufCmdBlk[6] = (unsigned char)((param_len >> 16) & 0xff);
-    wbufCmdBlk[7] = (unsigned char)((param_len >> 8) & 0xff);
-    wbufCmdBlk[8] = (unsigned char)(param_len & 0xff);
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
+    sg_put_unaligned_be24((uint32_t)buffer_offset, wbufCmdBlk + 3);
+    sg_put_unaligned_be24((uint32_t)param_len, wbufCmdBlk + 6);
     if (verbose) {
-        fprintf(sg_warnings_strm, "    Write buffer cmd: ");
+        pr2ws("    Write buffer cmd: ");
         for (k = 0; k < WRITE_BUFFER_CMDLEN; ++k)
-            fprintf(sg_warnings_strm, "%02x ", wbufCmdBlk[k]);
-        fprintf(sg_warnings_strm, "\n");
+            pr2ws("%02x ", wbufCmdBlk[k]);
+        pr2ws("\n");
         if ((verbose > 1) && paramp && param_len) {
-            fprintf(sg_warnings_strm, "    Write buffer parameter list%s:\n",
-                    ((param_len > 256) ? " (first 256 bytes)" : ""));
+            pr2ws("    Write buffer parameter list%s:\n",
+                  ((param_len > 256) ? " (first 256 bytes)" : ""));
             dStrHexErr((const char *)paramp,
-                    ((param_len > 256) ? 256 : param_len), -1);
+                       ((param_len > 256) ? 256 : param_len), -1);
         }
     }
 
     ptvp = construct_scsi_pt_obj();
     if (NULL == ptvp) {
-        fprintf(sg_warnings_strm, "write buffer: out of memory\n");
+        pr2ws("write buffer: out of memory\n");
         return -1;
     }
     set_scsi_pt_cdb(ptvp, wbufCmdBlk, sizeof(wbufCmdBlk));
@@ -1883,25 +1774,22 @@ sg_ll_unmap_v2(int sg_fd, int anchor, int group_num, int timeout_secs,
     if (anchor)
         uCmdBlk[1] |= 0x1;
     tmout = (timeout_secs > 0) ? timeout_secs : DEF_PT_TIMEOUT;
-    uCmdBlk[7] = group_num & 0x1f;
-    uCmdBlk[7] = (param_len >> 8) & 0xff;
-    uCmdBlk[8] = param_len & 0xff;
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
+    uCmdBlk[6] = group_num & 0x1f;
+    sg_put_unaligned_be16((uint16_t)param_len, uCmdBlk + 7);
     if (verbose) {
-        fprintf(sg_warnings_strm, "    unmap cdb: ");
+        pr2ws("    unmap cdb: ");
         for (k = 0; k < UNMAP_CMDLEN; ++k)
-            fprintf(sg_warnings_strm, "%02x ", uCmdBlk[k]);
-        fprintf(sg_warnings_strm, "\n");
+            pr2ws("%02x ", uCmdBlk[k]);
+        pr2ws("\n");
         if ((verbose > 1) && paramp && param_len) {
-            fprintf(sg_warnings_strm, "    unmap parameter list:\n");
+            pr2ws("    unmap parameter list:\n");
             dStrHexErr((const char *)paramp, param_len, -1);
         }
     }
 
     ptvp = construct_scsi_pt_obj();
     if (NULL == ptvp) {
-        fprintf(sg_warnings_strm, "unmap: out of memory\n");
+        pr2ws("unmap: out of memory\n");
         return -1;
     }
     set_scsi_pt_cdb(ptvp, uCmdBlk, sizeof(uCmdBlk));
@@ -1940,18 +1828,16 @@ sg_ll_read_block_limits(int sg_fd, void * resp, int mx_resp_len,
     unsigned char sense_b[SENSE_BUFF_LEN];
     struct sg_pt_base * ptvp;
 
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
     if (verbose) {
-        fprintf(sg_warnings_strm, "    read block limits cdb: ");
+        pr2ws("    read block limits cdb: ");
         for (k = 0; k < READ_BLOCK_LIMITS_CMDLEN; ++k)
-            fprintf(sg_warnings_strm, "%02x ", rlCmdBlk[k]);
-        fprintf(sg_warnings_strm, "\n");
+            pr2ws("%02x ", rlCmdBlk[k]);
+        pr2ws("\n");
     }
 
     ptvp = construct_scsi_pt_obj();
     if (NULL == ptvp) {
-        fprintf(sg_warnings_strm, "read block limits: out of memory\n");
+        pr2ws("read block limits: out of memory\n");
         return -1;
     }
     set_scsi_pt_cdb(ptvp, rlCmdBlk, sizeof(rlCmdBlk));
@@ -1974,8 +1860,8 @@ sg_ll_read_block_limits(int sg_fd, void * resp, int mx_resp_len,
         }
     } else {
         if ((verbose > 2) && (ret > 0)) {
-            fprintf(sg_warnings_strm, "    read block limits: response%s\n",
-                    (ret > 256 ? ", first 256 bytes" : ""));
+            pr2ws("    read block limits: response%s\n",
+                  (ret > 256 ? ", first 256 bytes" : ""));
             dStrHexErr((const char *)resp, (ret > 256 ? 256 : ret), -1);
         }
         ret = 0;
@@ -2002,29 +1888,20 @@ sg_ll_receive_copy_results(int sg_fd, int sa, int list_id, void * resp,
     rcvcopyresCmdBlk[1] = (unsigned char)(sa & 0x1f);
     if (sa <= 4)        /* LID1 variants */
         rcvcopyresCmdBlk[2] = (unsigned char)(list_id);
-    else if ((sa >= 5) && (sa <= 7)) {  /* LID4 variants */
-        rcvcopyresCmdBlk[2] = (unsigned char)((list_id >> 24) & 0xff);
-        rcvcopyresCmdBlk[3] = (unsigned char)((list_id >> 16) & 0xff);
-        rcvcopyresCmdBlk[4] = (unsigned char)((list_id >> 8) & 0xff);
-        rcvcopyresCmdBlk[5] = (unsigned char)(list_id & 0xff);
-    }
-    rcvcopyresCmdBlk[10] = (unsigned char)((mx_resp_len >> 24) & 0xff);
-    rcvcopyresCmdBlk[11] = (unsigned char)((mx_resp_len >> 16) & 0xff);
-    rcvcopyresCmdBlk[12] = (unsigned char)((mx_resp_len >> 8) & 0xff);
-    rcvcopyresCmdBlk[13] = (unsigned char)(mx_resp_len & 0xff);
+    else if ((sa >= 5) && (sa <= 7))    /* LID4 variants */
+        sg_put_unaligned_be32((uint32_t)list_id, rcvcopyresCmdBlk + 2);
+    sg_put_unaligned_be32((uint32_t)mx_resp_len, rcvcopyresCmdBlk + 10);
 
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
     if (verbose) {
-        fprintf(sg_warnings_strm, "    %s cmd: ", b);
+        pr2ws("    %s cmd: ", b);
         for (k = 0; k < THIRD_PARTY_COPY_IN_CMDLEN; ++k)
-            fprintf(sg_warnings_strm, "%02x ", rcvcopyresCmdBlk[k]);
-        fprintf(sg_warnings_strm, "\n");
+            pr2ws("%02x ", rcvcopyresCmdBlk[k]);
+        pr2ws("\n");
     }
 
     ptvp = construct_scsi_pt_obj();
     if (NULL == ptvp) {
-        fprintf(sg_warnings_strm, "%s: out of memory\n", b);
+        pr2ws("%s: out of memory\n", b);
         return -1;
     }
     set_scsi_pt_cdb(ptvp, rcvcopyresCmdBlk, sizeof(rcvcopyresCmdBlk));
@@ -2071,28 +1948,22 @@ sg_ll_extended_copy(int sg_fd, void * paramp, int param_len, int noisy,
     const char * opcode_name = "Extended copy (LID1)";
 
     xcopyCmdBlk[1] = (unsigned char)(EXTENDED_COPY_LID1_SA & 0x1f);
-    xcopyCmdBlk[10] = (unsigned char)((param_len >> 24) & 0xff);
-    xcopyCmdBlk[11] = (unsigned char)((param_len >> 16) & 0xff);
-    xcopyCmdBlk[12] = (unsigned char)((param_len >> 8) & 0xff);
-    xcopyCmdBlk[13] = (unsigned char)(param_len & 0xff);
+    sg_put_unaligned_be32((uint32_t)param_len, xcopyCmdBlk + 10);
 
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
     if (verbose) {
-        fprintf(sg_warnings_strm, "    %s cmd: ", opcode_name);
+        pr2ws("    %s cmd: ", opcode_name);
         for (k = 0; k < THIRD_PARTY_COPY_OUT_CMDLEN; ++k)
-            fprintf(sg_warnings_strm, "%02x ", xcopyCmdBlk[k]);
-        fprintf(sg_warnings_strm, "\n");
+            pr2ws("%02x ", xcopyCmdBlk[k]);
+        pr2ws("\n");
         if ((verbose > 1) && paramp && param_len) {
-            fprintf(sg_warnings_strm, "    %s parameter list:\n",
-                    opcode_name);
+            pr2ws("    %s parameter list:\n", opcode_name);
             dStrHexErr((const char *)paramp, param_len, -1);
         }
     }
 
     ptvp = construct_scsi_pt_obj();
     if (NULL == ptvp) {
-        fprintf(sg_warnings_strm, "%s: out of memory\n", opcode_name);
+        pr2ws("%s: out of memory\n", opcode_name);
         return -1;
     }
     set_scsi_pt_cdb(ptvp, xcopyCmdBlk, sizeof(xcopyCmdBlk));
@@ -2136,58 +2007,43 @@ sg_ll_3party_copy_out(int sg_fd, int sa, unsigned int list_id, int group_num,
     struct sg_pt_base * ptvp;
     char cname[80];
 
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
     sg_get_opcode_sa_name(THIRD_PARTY_COPY_OUT_CMD, sa, 0, sizeof(cname),
                           cname);
     xcopyCmdBlk[1] = (unsigned char)(sa & 0x1f);
     switch (sa) {
     case 0x0:   /* XCOPY(LID1) */
     case 0x1:   /* XCOPY(LID4) */
-        xcopyCmdBlk[10] = (unsigned char)((param_len >> 24) & 0xff);
-        xcopyCmdBlk[11] = (unsigned char)((param_len >> 16) & 0xff);
-        xcopyCmdBlk[12] = (unsigned char)((param_len >> 8) & 0xff);
-        xcopyCmdBlk[13] = (unsigned char)(param_len & 0xff);
+        sg_put_unaligned_be32((uint32_t)param_len, xcopyCmdBlk + 10);
         break;
     case 0x10:  /* POPULATE TOKEN (SBC-3) */
     case 0x11:  /* WRITE USING TOKEN (SBC-3) */
-        xcopyCmdBlk[6] = (unsigned char)((list_id >> 24) & 0xff);
-        xcopyCmdBlk[7] = (unsigned char)((list_id >> 16) & 0xff);
-        xcopyCmdBlk[8] = (unsigned char)((list_id >> 8) & 0xff);
-        xcopyCmdBlk[9] = (unsigned char)(list_id & 0xff);
-        xcopyCmdBlk[10] = (unsigned char)((param_len >> 24) & 0xff);
-        xcopyCmdBlk[11] = (unsigned char)((param_len >> 16) & 0xff);
-        xcopyCmdBlk[12] = (unsigned char)((param_len >> 8) & 0xff);
-        xcopyCmdBlk[13] = (unsigned char)(param_len & 0xff);
+        sg_put_unaligned_be32((uint32_t)list_id, xcopyCmdBlk + 6);
+        sg_put_unaligned_be32((uint32_t)param_len, xcopyCmdBlk + 10);
         xcopyCmdBlk[14] = (unsigned char)(group_num & 0x1f);
         break;
     case 0x1c:  /* COPY OPERATION ABORT */
-        xcopyCmdBlk[2] = (unsigned char)((list_id >> 24) & 0xff);
-        xcopyCmdBlk[3] = (unsigned char)((list_id >> 16) & 0xff);
-        xcopyCmdBlk[4] = (unsigned char)((list_id >> 8) & 0xff);
-        xcopyCmdBlk[5] = (unsigned char)(list_id & 0xff);
+        sg_put_unaligned_be32((uint32_t)list_id, xcopyCmdBlk + 2);
         break;
     default:
-        fprintf(sg_warnings_strm, "sg_ll_3party_copy_out: unknown service "
-                "action 0x%x\n", sa);
+        pr2ws("sg_ll_3party_copy_out: unknown service action 0x%x\n", sa);
         return -1;
     }
     tmout = (timeout_secs > 0) ? timeout_secs : DEF_PT_TIMEOUT;
 
     if (verbose) {
-        fprintf(sg_warnings_strm, "    %s cmd: ", cname);
+        pr2ws("    %s cmd: ", cname);
         for (k = 0; k < THIRD_PARTY_COPY_OUT_CMDLEN; ++k)
-            fprintf(sg_warnings_strm, "%02x ", xcopyCmdBlk[k]);
-        fprintf(sg_warnings_strm, "\n");
+            pr2ws("%02x ", xcopyCmdBlk[k]);
+        pr2ws("\n");
         if ((verbose > 1) && paramp && param_len) {
-            fprintf(sg_warnings_strm, "    %s parameter list:\n", cname);
+            pr2ws("    %s parameter list:\n", cname);
             dStrHexErr((const char *)paramp, param_len, -1);
         }
     }
 
     ptvp = construct_scsi_pt_obj();
     if (NULL == ptvp) {
-        fprintf(sg_warnings_strm, "%s: out of memory\n", cname);
+        pr2ws("%s: out of memory\n", cname);
         return -1;
     }
     set_scsi_pt_cdb(ptvp, xcopyCmdBlk, sizeof(xcopyCmdBlk));

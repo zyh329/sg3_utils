@@ -1,5 +1,5 @@
 /* A utility program originally written for the Linux OS SCSI subsystem.
- *  Copyright (C) 2004-2014 D. Gilbert
+ *  Copyright (C) 2004-2016 D. Gilbert
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
  *  the Free Software Foundation; either version 2, or (at your option)
@@ -12,7 +12,6 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdarg.h>
 #include <string.h>
 #include <ctype.h>
 #include <getopt.h>
@@ -26,8 +25,10 @@
 #include "sg_lib.h"
 #include "sg_cmds_basic.h"
 #include "sg_cmds_extra.h"
+#include "sg_unaligned.h"
+#include "sg_pr2serr.h"
 
-static const char * version_str = "0.48 20140515";
+static const char * version_str = "0.52 20160201";
 
 
 #define PRIN_RKEY_SA     0x0
@@ -71,39 +72,39 @@ struct opts_t {
 
 
 static struct option long_options[] = {
-    {"alloc-length", 1, 0, 'l'},
-    {"clear", 0, 0, 'C'},
-    {"device", 1, 0, 'd'},
-    {"help", 0, 0, 'h'},
-    {"hex", 0, 0, 'H'},
-    {"in", 0, 0, 'i'},
-    {"no-inquiry", 0, 0, 'n'},
-    {"out", 0, 0, 'o'},
-    {"param-alltgpt", 0, 0, 'Y'},
-    {"param-aptpl", 0, 0, 'Z'},
-    {"param-rk", 1, 0, 'K'},
-    {"param-sark", 1, 0, 'S'},
-    {"param-unreg", 0, 0, 'U'},
-    {"preempt", 0, 0, 'P'},
-    {"preempt-abort", 0, 0, 'A'},
-    {"prout-type", 1, 0, 'T'},
-    {"read-full-status", 0, 0, 's'},
-    {"read-keys", 0, 0, 'k'},
-    {"readonly", 0, 0, 'y'},
-    {"read-reservation", 0, 0, 'r'},
-    {"read-status", 0, 0, 's'},
-    {"register", 0, 0, 'G'},
-    {"register-ignore", 0, 0, 'I'},
-    {"register-move", 0, 0, 'M'},
-    {"release", 0, 0, 'L'},
-    {"relative-target-port", 1, 0, 'Q'},
-    {"replace-lost", 0, 0, 'z'},
-    {"report-capabilities", 0, 0, 'c'},
-    {"reserve", 0, 0, 'R'},
-    {"transport-id", 1, 0, 'X'},
-    {"unreg", 0, 0, 'U'},
-    {"verbose", 0, 0, 'v'},
-    {"version", 0, 0, 'V'},
+    {"alloc-length", required_argument, 0, 'l'},
+    {"clear", no_argument, 0, 'C'},
+    {"device", required_argument, 0, 'd'},
+    {"help", no_argument, 0, 'h'},
+    {"hex", no_argument, 0, 'H'},
+    {"in", no_argument, 0, 'i'},
+    {"no-inquiry", no_argument, 0, 'n'},
+    {"out", no_argument, 0, 'o'},
+    {"param-alltgpt", no_argument, 0, 'Y'},
+    {"param-aptpl", no_argument, 0, 'Z'},
+    {"param-rk", required_argument, 0, 'K'},
+    {"param-sark", required_argument, 0, 'S'},
+    {"param-unreg", no_argument, 0, 'U'},
+    {"preempt", no_argument, 0, 'P'},
+    {"preempt-abort", no_argument, 0, 'A'},
+    {"prout-type", required_argument, 0, 'T'},
+    {"read-full-status", no_argument, 0, 's'},
+    {"read-keys", no_argument, 0, 'k'},
+    {"readonly", no_argument, 0, 'y'},
+    {"read-reservation", no_argument, 0, 'r'},
+    {"read-status", no_argument, 0, 's'},
+    {"register", no_argument, 0, 'G'},
+    {"register-ignore", no_argument, 0, 'I'},
+    {"register-move", no_argument, 0, 'M'},
+    {"release", no_argument, 0, 'L'},
+    {"relative-target-port", required_argument, 0, 'Q'},
+    {"replace-lost", no_argument, 0, 'z'},
+    {"report-capabilities", no_argument, 0, 'c'},
+    {"reserve", no_argument, 0, 'R'},
+    {"transport-id", required_argument, 0, 'X'},
+    {"unreg", no_argument, 0, 'U'},
+    {"verbose", no_argument, 0, 'v'},
+    {"version", no_argument, 0, 'V'},
     {0, 0, 0, 0}
 };
 
@@ -150,79 +151,89 @@ static const char * pr_type_strs[] = {
 };
 
 
-#ifdef __GNUC__
-static int pr2serr(const char * fmt, ...)
-        __attribute__ ((format (printf, 1, 2)));
-#else
-static int pr2serr(const char * fmt, ...);
-#endif
-
-static int
-pr2serr(const char * fmt, ...)
-{
-    va_list args;
-    int n;
-
-    va_start(args, fmt);
-    n = vfprintf(stderr, fmt, args);
-    va_end(args);
-    return n;
-}
-
 static void
-usage()
+usage(int help)
 {
-    pr2serr("Usage: sg_persist [OPTIONS] [DEVICE]\n"
-            "  where OPTIONS include:\n"
-            "    --alloc-length=LEN|-l LEN    allocation length hex value "
-            "(used with\n"
-            "                                 PR In only) (default: 8192 "
-            "(2000 in hex))\n"
-            "    --clear|-C                 PR Out: Clear\n"
-            "    --device=DEVICE|-d DEVICE    query or change DEVICE\n"
-            "    --help|-h                  output this usage message\n"
-            "    --hex|-H                   output response in hex\n"
-            "    --in|-i                    request PR In command (default)\n"
-            "    --no-inquiry|-n            skip INQUIRY (default: do "
-            "INQUIRY)\n"
-            "    --out|-o                   request PR Out command\n"
-            "    --param-alltgpt|-Y         PR Out parameter 'ALL_TG_PT'\n"
-            "    --param-aptpl|-Z           PR Out parameter 'APTPL'\n"
-            "    --param-rk=RK|-K RK        PR Out parameter reservation key\n"
-            "                               (RK is in hex)\n"
-            "    --param-sark=SARK|-S SARK    PR Out parameter service "
-            "action\n"
-            "                               reservation key (SARK is in "
-            "hex)\n"
-            "    --preempt|-P               PR Out: Preempt\n"
-            "    --preempt-abort|-A         PR Out: Preempt and Abort\n"
-            "    --prout-type=TYPE|-T TYPE    PR Out command type\n"
-            "    --read-full-status|-s      PR In: Read Full Status\n"
-            "    --read-keys|-k             PR In: Read Keys\n");
-    pr2serr("    --readonly|-y              open DEVICE read-only (def: "
-            "read-write)\n"
-            "    --read-reservation|-r      PR In: Read Reservation\n"
-            "    --read-status|-s           PR In: Read Full Status\n"
-            "    --register|-G              PR Out: Register\n"
-            "    --register-ignore|-I       PR Out: Register and Ignore\n"
-            "    --register-move|-M         PR Out: Register and Move\n"
-            "    --relative-target-port=RTPI|-Q RTPI    relative target port "
-            "identifier\n"
-            "                               for '--register-move'\n"
-            "    --release|-L               PR Out: Release\n"
-            "    --replace-lost|-x          PR Out: Replace Lost Reservation\n"
-            "    --report-capabilities|-c   PR In: Report Capabilities\n"
-            "    --reserve|-R               PR Out: Reserve\n"
-            "    --transport-id=TIDS|-X TIDS    one or more "
-            "TransportIDs can\n"
-            "                               be given in several forms\n"
-            "    --unreg|-U                 optional with PR Out Register "
-            "and Move\n"
-            "    --verbose|-v               output additional debug "
-            "information\n"
-            "    --version|-V               output version string\n"
-            "    -?                         output this usage message\n\n"
-            "Performs a SCSI PERSISTENT RESERVE (IN or OUT) command\n");
+    if (help < 2) {
+        pr2serr("Usage: sg_persist [OPTIONS] [DEVICE]\n"
+                "  where the main OPTIONS are:\n"
+                "    --clear|-C                 PR Out: Clear\n"
+                "    --help|-h                  print usage message, "
+                "twice for more\n"
+                "    --in|-i                    request PR In command "
+                "(default)\n"
+                "    --out|-o                   request PR Out command\n"
+                "    --param-rk=RK|-K RK        PR Out parameter reservation "
+                "key\n"
+                "                               (RK is in hex)\n"
+                "    --param-sark=SARK|-S SARK    PR Out parameter service "
+                "action\n"
+                "                                 reservation key (SARK is "
+                "in hex)\n"
+                "    --preempt|-P               PR Out: Preempt\n"
+                "    --preempt-abort|-A         PR Out: Preempt and Abort\n"
+                "    --prout-type=TYPE|-T TYPE    PR Out type field (see "
+                "'-hh')\n"
+                "    --read-full-status|-s      PR In: Read Full Status\n"
+                "    --read-keys|-k             PR In: Read Keys "
+                "(default)\n");
+        pr2serr("    --read-reservation|-r      PR In: Read Reservation\n"
+                "    --read-status|-s           PR In: Read Full Status\n"
+                "    --register|-G              PR Out: Register\n"
+                "    --register-ignore|-I       PR Out: Register and Ignore\n"
+                "    --register-move|-M         PR Out: Register and Move\n"
+                "                               for '--register-move'\n"
+                "    --release|-L               PR Out: Release\n"
+                "    --replace-lost|-x          PR Out: Replace Lost "
+                "Reservation\n"
+                "    --report-capabilities|-c   PR In: Report Capabilities\n"
+                "    --reserve|-R               PR Out: Reserve\n"
+                "    --unreg|-U                 optional with PR Out "
+                "Register and Move\n\n"
+                "Performs a SCSI PERSISTENT RESERVE (IN or OUT) command. "
+                "Invoking\n'sg_persist DEVICE' will do a PR In Read Keys "
+                "command. Use '-hh'\nfor more options and TYPE meanings.\n");
+    } else {
+        pr2serr("Usage: sg_persist [OPTIONS] [DEVICE]\n"
+                "  where the other OPTIONS are:\n"
+                "    --alloc-length=LEN|-l LEN    allocation length hex "
+                "value (used with\n"
+                "                                 PR In only) (default: 8192 "
+                "(2000 in hex))\n"
+                "    --device=DEVICE|-d DEVICE    supply DEVICE as an option "
+                "rather than\n"
+                "                                 an argument\n"
+                "    --hex|-H                   output response in hex (for "
+                "PR In commands)\n"
+                "    --no-inquiry|-n            skip INQUIRY (default: do "
+                "INQUIRY)\n"
+                "    --param-alltgpt|-Y         PR Out parameter "
+                "'ALL_TG_PT'\n"
+                "    --param-aptpl|-Z           PR Out parameter 'APTPL'\n"
+                "    --readonly|-y              open DEVICE read-only (def: "
+                "read-write)\n"
+                "    --relative-target-port=RTPI|-Q RTPI    relative target "
+                "port "
+                "identifier\n"
+                "    --transport-id=TIDS|-X TIDS    one or more "
+                "TransportIDs can\n"
+                "                                   be given in several "
+                "forms\n"
+                "    --verbose|-v               output additional debug "
+                "information\n"
+                "    --version|-V               output version string\n\n"
+                "For the main options use '--help' or '-h' once.\n\n\n");
+        pr2serr("PR Out TYPE field value meanings:\n"
+                "  0:    obsolete (was 'read shared' in SPC)\n"
+                "  1:    write exclusive\n"
+                "  2:    obsolete (was 'read exclusive')\n"
+                "  3:    exclusive access\n"
+                "  4:    obsolete (was 'shared access')\n"
+                "  5:    write exclusive, registrants only\n"
+                "  6:    exclusive access, registrants only\n"
+                "  7:    write exclusive, all registrants\n"
+                "  8:    exclusive access, all registrants\n");
+    }
 }
 
 /* If num_tids==0 then only one TransportID is assumed with len bytes in
@@ -233,8 +244,7 @@ static void
 decode_transport_id(const char * leadin, unsigned char * ucp, int len,
                     int num_tids)
 {
-    int format_code, proto_id, num, j, k;
-    uint64_t ull;
+    int format_code, proto_id, num, k;
     int bump;
 
     if (num_tids > 0)
@@ -257,12 +267,12 @@ decode_transport_id(const char * leadin, unsigned char * ucp, int len,
             break;
         case TPROTO_SPI: /* Parallel SCSI */
             printf("%s  Parallel SCSI initiator SCSI address: 0x%x\n",
-                   leadin, ((ucp[2] << 8) | ucp[3]));
+                   leadin, sg_get_unaligned_be16(ucp + 2));
             if (0 != format_code)
                 printf("%s  [Unexpected format code: %d]\n", leadin,
                        format_code);
             printf("%s  relative port number (of corresponding target): "
-                   "0x%x\n", leadin, ((ucp[6] << 8) | ucp[7]));
+                   "0x%x\n", leadin,  sg_get_unaligned_be16(ucp + 6));
             break;
         case TPROTO_SSA:
             printf("%s  SSA (transport id not defined):\n", leadin);
@@ -285,7 +295,7 @@ decode_transport_id(const char * leadin, unsigned char * ucp, int len,
             break;
         case TPROTO_ISCSI:
             printf("%s  iSCSI ", leadin);
-            num = ((ucp[2] << 8) | ucp[3]);
+            num =  sg_get_unaligned_be16(ucp + 2);
             if (0 == format_code)
                 printf("name: %.*s\n", num, &ucp[4]);
             else if (1 == format_code)
@@ -296,13 +306,8 @@ decode_transport_id(const char * leadin, unsigned char * ucp, int len,
             }
             break;
         case TPROTO_SAS:
-            ull = 0;
-            for (j = 0; j < 8; ++j) {
-                if (j > 0)
-                    ull <<= 8;
-                ull |= ucp[4 + j];
-            }
-            printf("%s  SAS address: 0x%016" PRIx64 "\n", leadin, ull);
+            printf("%s  SAS address: 0x%016" PRIx64 "\n", leadin,
+                   sg_get_unaligned_be64(ucp + 4));
             if (0 != format_code)
                 printf("%s  [Unexpected format code: %d]\n", leadin,
                        format_code);
@@ -324,7 +329,7 @@ decode_transport_id(const char * leadin, unsigned char * ucp, int len,
             break;
         case TPROTO_SOP:
             printf("%s  SOP ", leadin);
-            num = ((ucp[2] << 8) | ucp[3]);
+            num =  sg_get_unaligned_be16(ucp + 2);
             if (0 == format_code)
                 printf("Routing ID: 0x%x\n", num);
             else {
@@ -348,9 +353,8 @@ decode_transport_id(const char * leadin, unsigned char * ucp, int len,
 static int
 prin_work(int sg_fd, const struct opts_t * op)
 {
-    int k, j, num, res, add_len, add_desc_len, rel_pt_addr;
+    int k, j, num, res, add_len, add_desc_len;
     unsigned int pr_gen;
-    uint64_t ull;
     unsigned char * ucp;
     unsigned char pr_buff[MX_ALLOC_LEN];
 
@@ -417,10 +421,8 @@ prin_work(int sg_fd, const struct opts_t * op)
             }
         }
     } else {
-        pr_gen = ((pr_buff[0] << 24) | (pr_buff[1] << 16) |
-                  (pr_buff[2] << 8) | pr_buff[3]);
-        add_len = ((pr_buff[4] << 24) | (pr_buff[5] << 16) |
-                   (pr_buff[6] << 8) | pr_buff[7]);
+        pr_gen =  sg_get_unaligned_be32(pr_buff + 0);
+        add_len = sg_get_unaligned_be32(pr_buff + 4);
         if (op->hex) {
             if (op->hex > 1)
                 dStrHex((const char *)pr_buff, add_len + 8,
@@ -448,15 +450,9 @@ prin_work(int sg_fd, const struct opts_t * op)
                 else
                     printf("%d registered reservation keys follow:\n", num);
                 ucp = pr_buff + 8;
-                for (k = 0; k < num; ++k, ucp += 8) {
-                    ull = 0;
-                    for (j = 0; j < 8; ++j) {
-                        if (j > 0)
-                            ull <<= 8;
-                        ull |= ucp[j];
-                    }
-                    printf("    0x%" PRIx64 "\n", ull);
-                }
+                for (k = 0; k < num; ++k, ucp += 8)
+                    printf("    0x%" PRIx64 "\n",
+                           sg_get_unaligned_be64(ucp + 0));
             } else
                 printf("there are NO registered reservation keys\n");
         } else if (PRIN_RRES_SA == op->prin_sa) {
@@ -465,13 +461,7 @@ prin_work(int sg_fd, const struct opts_t * op)
             if (num > 0) {
                 printf("Reservation follows:\n");
                 ucp = pr_buff + 8;
-                ull = 0;
-                for (j = 0; j < 8; ++j) {
-                    if (j > 0)
-                        ull <<= 8;
-                    ull |= ucp[j];
-                }
-                printf("    Key=0x%" PRIx64 "\n", ull);
+                printf("    Key=0x%" PRIx64 "\n", sg_get_unaligned_be64(ucp));
                 j = ((ucp[13] >> 4) & 0xf);
                 if (0 == j)
                     printf("    scope: LU_SCOPE, ");
@@ -490,23 +480,15 @@ prin_work(int sg_fd, const struct opts_t * op)
                 printf("  So there are no registered IT nexuses\n");
             }
             for (k = 0; k < add_len; k += num, ucp += num) {
-                add_desc_len = ((ucp[20] << 24) | (ucp[21] << 16) |
-                                (ucp[22] << 8) | ucp[23]);
+                add_desc_len = sg_get_unaligned_be32(ucp + 20);
                 num = 24 + add_desc_len;
-                ull = 0;
-                for (j = 0; j < 8; ++j) {
-                    if (j > 0)
-                        ull <<= 8;
-                    ull |= ucp[j];
-                }
-                printf("    Key=0x%" PRIx64 "\n", ull);
+                printf("    Key=0x%" PRIx64 "\n", sg_get_unaligned_be64(ucp));
                 if (ucp[12] & 0x2)
                     printf("      All target ports bit set\n");
                 else {
                     printf("      All target ports bit clear\n");
-                    rel_pt_addr = ((ucp[18] << 8) | ucp[19]);
                     printf("      Relative port address: 0x%x\n",
-                           rel_pt_addr);
+                           sg_get_unaligned_be16(ucp + 18));
                 }
                 if (ucp[12] & 0x1) {
                     printf("      << Reservation holder >>\n");
@@ -540,7 +522,7 @@ compact_transportid_array(struct opts_t * op)
          ++k, off += MX_TID_LEN) {
         protocol_id = ucp[off] & 0xf;
         if (TPROTO_ISCSI == protocol_id) {
-            len = (ucp[off + 2] << 8) + ucp[off + 3] + 4;
+            len = sg_get_unaligned_be16(ucp + off + 2) + 4;
             if (len < 24)
                 len = 24;
             if (off > compact_len)
@@ -559,25 +541,15 @@ compact_transportid_array(struct opts_t * op)
 static int
 prout_work(int sg_fd, struct opts_t * op)
 {
-    int j, len, res, t_arr_len;
+    int len, res, t_arr_len;
     unsigned char pr_buff[MX_ALLOC_LEN];
-    uint64_t param_rk;
-    uint64_t param_sark;
     char b[64];
     char bb[80];
 
     t_arr_len = compact_transportid_array(op);
-    param_rk = op->param_rk;
     memset(pr_buff, 0, sizeof(pr_buff));
-    for (j = 7; j >= 0; --j) {
-        pr_buff[j] = (param_rk & 0xff);
-        param_rk >>= 8;
-    }
-    param_sark = op->param_sark;
-    for (j = 7; j >= 0; --j) {
-        pr_buff[8 + j] = (param_sark & 0xff);
-        param_sark >>= 8;
-    }
+    sg_put_unaligned_be64(op->param_rk, pr_buff + 0);
+    sg_put_unaligned_be64(op->param_sark, pr_buff + 8);
     if (op->param_alltgpt)
         pr_buff[20] |= 0x4;
     if (op->param_aptpl)
@@ -587,10 +559,7 @@ prout_work(int sg_fd, struct opts_t * op)
         pr_buff[20] |= 0x8;     /* set SPEC_I_PT bit */
         memcpy(&pr_buff[28], op->transportid_arr, t_arr_len);
         len += (t_arr_len + 4);
-        pr_buff[24] = (unsigned char)((t_arr_len >> 24) & 0xff);
-        pr_buff[25] = (unsigned char)((t_arr_len >> 16) & 0xff);
-        pr_buff[26] = (unsigned char)((t_arr_len >> 8) & 0xff);
-        pr_buff[27] = (unsigned char)(t_arr_len & 0xff);
+        sg_put_unaligned_be32((uint32_t)t_arr_len, pr_buff + 24);
     }
     res = sg_ll_persistent_reserve_out(sg_fd, op->prout_sa, 0,
                                        op->prout_type, pr_buff, len, 1,
@@ -620,37 +589,23 @@ prout_work(int sg_fd, struct opts_t * op)
 static int
 prout_reg_move_work(int sg_fd, struct opts_t * op)
 {
-    int j, len, res, t_arr_len;
+    int len, res, t_arr_len;
     unsigned char pr_buff[MX_ALLOC_LEN];
-    uint64_t param_rk;
-    uint64_t param_sark;
 
     t_arr_len = compact_transportid_array(op);
-    param_rk = op->param_rk;
     memset(pr_buff, 0, sizeof(pr_buff));
-    for (j = 7; j >= 0; --j) {
-        pr_buff[j] = (param_rk & 0xff);
-        param_rk >>= 8;
-    }
-    param_sark = op->param_sark;
-    for (j = 7; j >= 0; --j) {
-        pr_buff[8 + j] = (param_sark & 0xff);
-        param_sark >>= 8;
-    }
+    sg_put_unaligned_be64(op->param_rk, pr_buff + 0);
+    sg_put_unaligned_be64(op->param_sark, pr_buff + 8);
     if (op->param_unreg)
         pr_buff[17] |= 0x2;
     if (op->param_aptpl)
         pr_buff[17] |= 0x1;
-    pr_buff[18] = (unsigned char)((op->param_rtp >> 8) & 0xff);
-    pr_buff[19] = (unsigned char)(op->param_rtp & 0xff);
+    sg_put_unaligned_be16(op->param_rtp, pr_buff + 18);
     len = 24;
     if (t_arr_len > 0) {
         memcpy(&pr_buff[24], op->transportid_arr, t_arr_len);
         len += t_arr_len;
-        pr_buff[20] = (unsigned char)((t_arr_len >> 24) & 0xff);
-        pr_buff[21] = (unsigned char)((t_arr_len >> 16) & 0xff);
-        pr_buff[22] = (unsigned char)((t_arr_len >> 8) & 0xff);
-        pr_buff[23] = (unsigned char)(t_arr_len & 0xff);
+        sg_put_unaligned_be32((uint32_t)t_arr_len, pr_buff + 20);
     }
     res = sg_ll_persistent_reserve_out(sg_fd, PROUT_REG_MOVE_SA, 0,
                                        op->prout_type, pr_buff, len, 1,
@@ -715,10 +670,8 @@ decode_sym_transportid(const char * lcp, unsigned char * tidp)
             return 0;
         }
         tidp[0] = TPROTO_SPI;
-        tidp[2] = (b >> 8) & 0xff;
-        tidp[3] = b & 0xff;
-        tidp[6] = (c >> 8) & 0xff;
-        tidp[7] = c & 0xff;
+        sg_put_unaligned_be16((uint16_t)b, tidp + 2);
+        sg_put_unaligned_be16((uint16_t)c, tidp + 6);
         return 1;
     } else if ((0 == memcmp("fcp,", lcp, 4)) ||
                (0 == memcmp("FCP,", lcp, 4))) {
@@ -819,16 +772,15 @@ decode_sym_transportid(const char * lcp, unsigned char * tidp)
             return 0;
         }
         tidp[0] = TPROTO_SOP;
-        tidp[2] = (ui >> 8) & 0xff;
-        tidp[3] = ui & 0xff;
+        sg_put_unaligned_be16((uint16_t)ui, tidp + 2);
         return 1;
     }
     pr2serr("unable to parse symbolic TransportID: %s\n", lcp);
     return 0;
 }
 
-/* Read one or more TransportIDs from the given file or from stdin.
- * Returns 0 if successful, 1 otherwise. */
+/* Read one or more TransportIDs from the given file or stdin. Reads from
+ * stdin when 'fnp' is NULL. Returns 0 if successful, 1 otherwise. */
 static int
 decode_file_tids(const char * fnp, struct opts_t * op)
 {
@@ -845,7 +797,7 @@ decode_file_tids(const char * fnp, struct opts_t * op)
     if (fnp) {
         fp = fopen(fnp, "r");
         if (NULL == fp) {
-            pr2serr("decode_file_tids: unable to open %s\n", fnp);
+            pr2serr("%s: unable to open %s\n", __func__, fnp);
             return 1;
         }
     }
@@ -873,8 +825,8 @@ decode_file_tids(const char * fnp, struct opts_t * op)
                 if (1 == sscanf(carry_over, "%x", &h))
                     tid_arr[off - 1] = h;       /* back up and overwrite */
                 else {
-                    pr2serr("decode_file_tids: carry_over error ['%s'] "
-                            "around line %d\n", carry_over, j + 1);
+                    pr2serr("%s: carry_over error ['%s'] around line %d\n",
+                            __func__, carry_over, j + 1);
                     goto bad;
                 }
                 lcp = line + 1;
@@ -895,16 +847,15 @@ decode_file_tids(const char * fnp, struct opts_t * op)
             goto my_cont_a;
         k = strspn(lcp, "0123456789aAbBcCdDeEfF ,\t");
         if ((k < in_len) && ('#' != lcp[k])) {
-            pr2serr("decode_file_tids: syntax error at line %d, pos %d\n",
-                    j + 1, m + k + 1);
+            pr2serr("%s: syntax error at line %d, pos %d\n", __func__, j + 1,
+                    m + k + 1);
             goto bad;
         }
         for (k = 0; k < 1024; ++k) {
             if (1 == sscanf(lcp, "%x", &h)) {
                 if (h > 0xff) {
-                    pr2serr("decode_file_tids: hex number larger than 0xff "
-                            "in line %d, pos %d\n", j + 1,
-                            (int)(lcp - line + 1));
+                    pr2serr("%s: hex number larger than 0xff in line %d, pos "
+                            "%d\n", __func__, j + 1, (int)(lcp - line + 1));
                     goto bad;
                 }
                 if (split_line && (1 == strlen(lcp))) {
@@ -912,7 +863,7 @@ decode_file_tids(const char * fnp, struct opts_t * op)
                     carry_over[0] = *lcp;
                 }
                 if ((off + k) >= (int)sizeof(op->transportid_arr)) {
-                    pr2serr("decode_file_tids: array length exceeded\n");
+                    pr2serr("%s: array length exceeded\n", __func__);
                     goto bad;
                 }
                 tid_arr[off + k] = h;
@@ -927,20 +878,22 @@ decode_file_tids(const char * fnp, struct opts_t * op)
                     --k;
                     break;
                 }
-                pr2serr("decode_file_tids: error in line %d, at pos %d\n",
-                        j + 1, (int)(lcp - line + 1));
+                pr2serr("%s: error in line %d, at pos %d\n", __func__, j + 1,
+                        (int)(lcp - line + 1));
                 goto bad;
             }
         }
 my_cont_a:
         off += MX_TID_LEN;
         if (off >= (MX_TIDS * MX_TID_LEN)) {
-            pr2serr("decode_file_tids: array length exceeded\n");
+            pr2serr("%s: array length exceeded\n", __func__);
             goto bad;
         }
         ++num;
     }
     op->num_transportids = num;
+   if (fnp)
+        fclose(fp);
     return 0;
 
 bad:
@@ -1029,6 +982,7 @@ main(int argc, char * argv[])
     int sg_fd, c, res;
     const char * device_name = NULL;
     char buff[48];
+    int help =0;
     int num_prin_sa = 0;
     int num_prout_sa = 0;
     int num_prout_param = 0;
@@ -1078,8 +1032,8 @@ main(int argc, char * argv[])
             ++num_prout_sa;
             break;
         case 'h':
-            usage();
-            return 0;
+            ++help;
+            break;
         case 'H':
             ++op->hex;
             break;
@@ -1199,11 +1153,11 @@ main(int argc, char * argv[])
             ++num_prout_param;
             break;
         case '?':
-            usage();
+            usage(1);
             return 0;
         default:
             pr2serr("unrecognised switch code 0x%x ??\n", c);
-            usage();
+            usage(1);
             return SG_LIB_SYNTAX_ERROR;
         }
     }
@@ -1215,19 +1169,23 @@ main(int argc, char * argv[])
         if (optind < argc) {
             for (; optind < argc; ++optind)
                 pr2serr("Unexpected extra argument: %s\n", argv[optind]);
-            usage();
+            usage(1);
             return SG_LIB_SYNTAX_ERROR;
         }
+    }
+    if (help > 0) {
+        usage(help);
+        return 0;
     }
 
     if (NULL == device_name) {
         pr2serr("No device name given\n");
-        usage();
+        usage(1);
         return SG_LIB_SYNTAX_ERROR;
     }
     if ((want_prout + want_prin) > 1) {
         pr2serr("choose '--in' _or_ '--out' (not both)\n");
-        usage();
+        usage(1);
         return SG_LIB_SYNTAX_ERROR;
     } else if (want_prout) { /* syntax check on PROUT arguments */
         op->prin = 0;
@@ -1251,7 +1209,7 @@ main(int argc, char * argv[])
             ++num_prin_sa;
         } else if (num_prin_sa > 1)  {
             pr2serr("Too many service actions given; choose one only\n");
-            usage();
+            usage(1);
             return SG_LIB_SYNTAX_ERROR;
         }
     }
@@ -1259,14 +1217,14 @@ main(int argc, char * argv[])
         (PROUT_REG_MOVE_SA != op->prout_sa)) {
         pr2serr("--unreg or --relative-target-port only useful with "
                 "--register-move\n");
-        usage();
+        usage(1);
         return SG_LIB_SYNTAX_ERROR;
     }
     if ((PROUT_REG_MOVE_SA == op->prout_sa) &&
         (1 != op->num_transportids)) {
         pr2serr("with --register-move one (and only one) --transport-id "
                 "should be given\n");
-        usage();
+        usage(1);
         return SG_LIB_SYNTAX_ERROR;
     }
     if (((PROUT_RES_SA == op->prout_sa) ||

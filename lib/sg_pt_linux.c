@@ -1,15 +1,16 @@
 /*
- * Copyright (c) 2005-2013 Douglas Gilbert.
+ * Copyright (c) 2005-2015 Douglas Gilbert.
  * All rights reserved.
  * Use of this source code is governed by a BSD-style
  * license that can be found in the BSD_LICENSE file.
  */
 
-/* sg_pt_linux version 1.22 20140606 */
+/* sg_pt_linux version 1.25 20151217 */
 
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include <ctype.h>
 #include <unistd.h>
@@ -38,6 +39,8 @@ static const char * linux_host_bytes[] = {
     "DID_TRANSPORT_DISRUPTED", "DID_TRANSPORT_FAILFAST",
     "DID_TARGET_FAILURE" /* 0x10 */,
     "DID_NEXUS_FAILURE (reservation conflict)",
+    "DID_ALLOC_FAILURE",
+    "DID_MEDIUM_ERROR",
 };
 
 #define LINUX_HOST_BYTES_SZ \
@@ -52,6 +55,7 @@ static const char * linux_driver_bytes[] = {
 #define LINUX_DRIVER_BYTES_SZ \
     (int)(sizeof(linux_driver_bytes) / sizeof(linux_driver_bytes[0]))
 
+#if 0
 static const char * linux_driver_suggests[] = {
     "SUGGEST_OK", "SUGGEST_RETRY", "SUGGEST_ABORT", "SUGGEST_REMAP",
     "SUGGEST_DIE", "UNKNOWN","UNKNOWN","UNKNOWN",
@@ -60,12 +64,13 @@ static const char * linux_driver_suggests[] = {
 
 #define LINUX_DRIVER_SUGGESTS_SZ \
     (int)(sizeof(linux_driver_suggests) / sizeof(linux_driver_suggests[0]))
+#endif
 
 /*
  * These defines are for constants that should be visible in the
  * /usr/include/scsi directory (brought in by sg_linux_inc.h).
  * Redefined and aliased here to decouple this code from
- * sg_io_linux.h
+ * sg_io_linux.h  N.B. the SUGGEST_* constants are no longer used.
  */
 #ifndef DRIVER_MASK
 #define DRIVER_MASK 0x0f
@@ -80,6 +85,26 @@ static const char * linux_driver_suggests[] = {
 #define SG_LIB_SUGGEST_MASK     SUGGEST_MASK
 #define SG_LIB_DRIVER_SENSE    DRIVER_SENSE
 
+
+#ifdef __GNUC__
+static int pr2ws(const char * fmt, ...)
+        __attribute__ ((format (printf, 1, 2)));
+#else
+static int pr2ws(const char * fmt, ...);
+#endif
+
+
+static int
+pr2ws(const char * fmt, ...)
+{
+    va_list args;
+    int n;
+
+    va_start(args, fmt);
+    n = vfprintf(sg_warnings_strm ? sg_warnings_strm : stderr, fmt, args);
+    va_end(args);
+    return n;
+}
 
 
 // <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
@@ -122,10 +147,7 @@ scsi_pt_open_flags(const char * device_name, int flags, int verbose)
     int fd;
 
     if (verbose > 1) {
-        if (NULL == sg_warnings_strm)
-            sg_warnings_strm = stderr;
-        fprintf(sg_warnings_strm, "open %s with flags=0x%x\n", device_name,
-                flags);
+        pr2ws("open %s with flags=0x%x\n", device_name, flags);
     }
     fd = open(device_name, flags);
     if (fd < 0)
@@ -150,6 +172,12 @@ struct sg_pt_base *
 construct_scsi_pt_obj()
 {
     struct sg_pt_linux_scsi * ptp;
+
+    /* The following 2 lines are temporary. It is to avoid a NULL pointer
+     * crash when an old utility is used with a newer library built after
+     * the sg_warnings_strm cleanup */
+    if (NULL == sg_warnings_strm)
+        sg_warnings_strm = stderr;
 
     ptp = (struct sg_pt_linux_scsi *)
           calloc(1, sizeof(struct sg_pt_linux_scsi));
@@ -306,18 +334,15 @@ do_scsi_pt(struct sg_pt_base * vp, int fd, int time_secs, int verbose)
 {
     struct sg_pt_linux_scsi * ptp = &vp->impl;
 
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
     ptp->os_err = 0;
     if (ptp->in_err) {
         if (verbose)
-            fprintf(sg_warnings_strm, "Replicated or unused set_scsi_pt... "
-                    "functions\n");
+            pr2ws("Replicated or unused set_scsi_pt... functions\n");
         return SCSI_PT_DO_BAD_PARAMS;
     }
     if (NULL == ptp->io_hdr.cmdp) {
         if (verbose)
-            fprintf(sg_warnings_strm, "No SCSI command (cdb) given\n");
+            pr2ws("No SCSI command (cdb) given\n");
         return SCSI_PT_DO_BAD_PARAMS;
     }
     /* io_hdr.timeout is in milliseconds */
@@ -328,8 +353,8 @@ do_scsi_pt(struct sg_pt_base * vp, int fd, int time_secs, int verbose)
     if (ioctl(fd, SG_IO, &ptp->io_hdr) < 0) {
         ptp->os_err = errno;
         if (verbose > 1)
-            fprintf(sg_warnings_strm, "ioctl(SG_IO) failed: %s (errno=%d)\n",
-                    strerror(ptp->os_err), ptp->os_err);
+            pr2ws("ioctl(SG_IO) failed: %s (errno=%d)\n",
+                  strerror(ptp->os_err), ptp->os_err);
         return -ptp->os_err;
     }
     return 0;
@@ -418,9 +443,8 @@ get_scsi_pt_transport_err_str(const struct sg_pt_base * vp, int max_b_len,
     int hs = ptp->io_hdr.host_status;
     int n, m;
     char * cp = b;
-    int driv, sugg;
+    int driv;
     const char * driv_cp = "unknown";
-    const char * sugg_cp = "unknown";
 
     if (max_b_len < 1)
         return b;
@@ -442,11 +466,12 @@ get_scsi_pt_transport_err_str(const struct sg_pt_base * vp, int max_b_len,
     driv = ds & SG_LIB_DRIVER_MASK;
     if (driv < LINUX_DRIVER_BYTES_SZ)
         driv_cp = linux_driver_bytes[driv];
+#if 0
     sugg = (ds & SG_LIB_SUGGEST_MASK) >> 4;
     if (sugg < LINUX_DRIVER_SUGGESTS_SZ)
         sugg_cp = linux_driver_suggests[sugg];
-    n = snprintf(cp, m, "Driver_status=0x%02x [%s, %s]\n", ds, driv_cp,
-                 sugg_cp);
+#endif
+    n = snprintf(cp, m, "Driver_status=0x%02x [%s]\n", ds, driv_cp);
     m -= n;
     if (m < 1)
         b[max_b_len - 1] = '\0';
@@ -531,20 +556,17 @@ find_bsg_major(int verbose)
     int n;
 
     if (NULL == (fp = fopen(proc_devices, "r"))) {
-        if (NULL == sg_warnings_strm)
-            sg_warnings_strm = stderr;
         if (verbose)
-            fprintf(sg_warnings_strm, "fopen %s failed: %s\n", proc_devices,
-                    strerror(errno));
+            pr2ws("fopen %s failed: %s\n", proc_devices, strerror(errno));
         return;
     }
     while ((cp = fgets(b, sizeof(b), fp))) {
-        if ((1 == sscanf(b, "%s", a)) &&
+        if ((1 == sscanf(b, "%126s", a)) &&
             (0 == memcmp(a, "Character", 9)))
             break;
     }
     while (cp && (cp = fgets(b, sizeof(b), fp))) {
-        if (2 == sscanf(b, "%d %s", &n, a)) {
+        if (2 == sscanf(b, "%d %126s", &n, a)) {
             if (0 == strcmp("bsg", a)) {
                 bsg_major = n;
                 break;
@@ -553,13 +575,10 @@ find_bsg_major(int verbose)
             break;
     }
     if (verbose > 3) {
-        if (NULL == sg_warnings_strm)
-            sg_warnings_strm = stderr;
         if (cp)
-            fprintf(sg_warnings_strm, "found bsg_major=%d\n", bsg_major);
+            pr2ws("found bsg_major=%d\n", bsg_major);
         else
-            fprintf(sg_warnings_strm, "found no bsg char device in %s\n",
-                proc_devices);
+            pr2ws("found no bsg char device in %s\n", proc_devices);
     }
     fclose(fp);
 }
@@ -587,12 +606,8 @@ scsi_pt_open_flags(const char * device_name, int flags, int verbose)
         bsg_major_checked = 1;
         find_bsg_major(verbose);
     }
-    if (verbose > 1) {
-        if (NULL == sg_warnings_strm)
-            sg_warnings_strm = stderr;
-        fprintf(sg_warnings_strm, "open %s with flags=0x%x\n", device_name,
-                flags);
-    }
+    if (verbose > 1)
+        pr2ws("open %s with flags=0x%x\n", device_name, flags);
     fd = open(device_name, flags);
     if (fd < 0)
         fd = -errno;
@@ -834,9 +849,8 @@ get_scsi_pt_transport_err_str(const struct sg_pt_base * vp, int max_b_len,
     int hs = ptp->io_hdr.transport_status;
     int n, m;
     char * cp = b;
-    int driv, sugg;
+    int driv;
     const char * driv_cp = "invalid";
-    const char * sugg_cp = "invalid";
 
     if (max_b_len < 1)
         return b;
@@ -858,11 +872,12 @@ get_scsi_pt_transport_err_str(const struct sg_pt_base * vp, int max_b_len,
     driv = ds & SG_LIB_DRIVER_MASK;
     if (driv < LINUX_DRIVER_BYTES_SZ)
         driv_cp = linux_driver_bytes[driv];
+#if 0
     sugg = (ds & SG_LIB_SUGGEST_MASK) >> 4;
     if (sugg < LINUX_DRIVER_SUGGESTS_SZ)
         sugg_cp = linux_driver_suggests[sugg];
-    n = snprintf(cp, m, "Driver_status=0x%02x [%s, %s]\n", ds, driv_cp,
-                 sugg_cp);
+#endif
+    n = snprintf(cp, m, "Driver_status=0x%02x [%s]\n", ds, driv_cp);
     m -= n;
     if (m < 1)
         b[max_b_len - 1] = '\0';
@@ -929,7 +944,7 @@ do_scsi_pt_v3(struct sg_pt_linux_scsi * ptp, int fd, int time_secs,
     if (ptp->io_hdr.din_xfer_len > 0) {
         if (ptp->io_hdr.dout_xfer_len > 0) {
             if (verbose)
-                fprintf(sg_warnings_strm, "sgv3 doesn't support bidi\n");
+                pr2ws("sgv3 doesn't support bidi\n");
             return SCSI_PT_DO_BAD_PARAMS;
         }
         v3_hdr.dxferp = (void *)(long)ptp->io_hdr.din_xferp;
@@ -952,7 +967,7 @@ do_scsi_pt_v3(struct sg_pt_linux_scsi * ptp, int fd, int time_secs,
 
     if (NULL == v3_hdr.cmdp) {
         if (verbose)
-            fprintf(sg_warnings_strm, "No SCSI command (cdb) given\n");
+            pr2ws("No SCSI command (cdb) given\n");
         return SCSI_PT_DO_BAD_PARAMS;
     }
     /* io_hdr.timeout is in milliseconds, if greater than zero */
@@ -961,8 +976,8 @@ do_scsi_pt_v3(struct sg_pt_linux_scsi * ptp, int fd, int time_secs,
     if (ioctl(fd, SG_IO, &v3_hdr) < 0) {
         ptp->os_err = errno;
         if (verbose > 1)
-            fprintf(sg_warnings_strm, "ioctl(SG_IO v3) failed: %s "
-                    "(errno=%d)\n", strerror(ptp->os_err), ptp->os_err);
+            pr2ws("ioctl(SG_IO v3) failed: %s (errno=%d)\n",
+                  strerror(ptp->os_err), ptp->os_err);
         return -ptp->os_err;
     }
     ptp->io_hdr.device_status = (__u32)v3_hdr.status;
@@ -987,13 +1002,10 @@ do_scsi_pt(struct sg_pt_base * vp, int fd, int time_secs, int verbose)
         bsg_major_checked = 1;
         find_bsg_major(verbose);
     }
-    if (NULL == sg_warnings_strm)
-        sg_warnings_strm = stderr;
     ptp->os_err = 0;
     if (ptp->in_err) {
         if (verbose)
-            fprintf(sg_warnings_strm, "Replicated or unused set_scsi_pt... "
-                    "functions\n");
+            pr2ws("Replicated or unused set_scsi_pt... functions\n");
         return SCSI_PT_DO_BAD_PARAMS;
     }
     if (bsg_major <= 0)
@@ -1004,8 +1016,8 @@ do_scsi_pt(struct sg_pt_base * vp, int fd, int time_secs, int verbose)
         if (fstat(fd, &a_stat) < 0) {
             ptp->os_err = errno;
             if (verbose > 1)
-                fprintf(sg_warnings_strm, "fstat() failed: %s (errno=%d)\n",
-                        strerror(ptp->os_err), ptp->os_err);
+                pr2ws("fstat() failed: %s (errno=%d)\n",
+                      strerror(ptp->os_err), ptp->os_err);
             return -ptp->os_err;
         }
         if (! S_ISCHR(a_stat.st_mode) ||
@@ -1015,7 +1027,7 @@ do_scsi_pt(struct sg_pt_base * vp, int fd, int time_secs, int verbose)
 
     if (! ptp->io_hdr.request) {
         if (verbose)
-            fprintf(sg_warnings_strm, "No SCSI command (cdb) given (v4)\n");
+            pr2ws("No SCSI command (cdb) given (v4)\n");
         return SCSI_PT_DO_BAD_PARAMS;
     }
     /* io_hdr.timeout is in milliseconds */
@@ -1033,8 +1045,8 @@ do_scsi_pt(struct sg_pt_base * vp, int fd, int time_secs, int verbose)
     if (ioctl(fd, SG_IO, &ptp->io_hdr) < 0) {
         ptp->os_err = errno;
         if (verbose > 1)
-            fprintf(sg_warnings_strm, "ioctl(SG_IO v4) failed: %s "
-                    "(errno=%d)\n", strerror(ptp->os_err), ptp->os_err);
+            pr2ws("ioctl(SG_IO v4) failed: %s (errno=%d)\n",
+                  strerror(ptp->os_err), ptp->os_err);
         return -ptp->os_err;
     }
     return 0;

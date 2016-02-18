@@ -9,16 +9,17 @@
 #include <errno.h>
 #include <limits.h>
 #include <signal.h>
+#include <poll.h>
 #include <sys/ioctl.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
-#include <sys/poll.h>
 #include <linux/major.h>
 #include <sys/time.h>
 typedef unsigned char u_char;   /* horrible, for scsi.h */
 #include "sg_lib.h"
 #include "sg_io_linux.h"
+#include "sg_unaligned.h"
 
 /* A utility program for the Linux OS SCSI generic ("sg") device driver.
 *  Copyright (C) 1999-2002 D. Gilbert and P. Allworth
@@ -47,7 +48,8 @@ typedef unsigned char u_char;   /* horrible, for scsi.h */
 
 */
 
-static char * version_str = "0.56 20140409";    /* was "0.55 20020509" */
+static char * version_str = "0.58 20151209";
+/* resurrected from "0.55 20020509" */
 
 #define DEF_BLOCK_SIZE 512
 #define DEF_BLOCKS_PER_TRANSFER 128
@@ -144,15 +146,11 @@ static int dd_count = -1;
 
 static const char * proc_allow_dio = "/proc/scsi/sg/allow_dio";
 
-int sg_fin_in_operation(Rq_coll * clp, Rq_elem * rep);
-int sg_fin_out_operation(Rq_coll * clp, Rq_elem * rep);
-int normal_in_operation(Rq_coll * clp, Rq_elem * rep, int blocks);
-int normal_out_operation(Rq_coll * clp, Rq_elem * rep, int blocks);
-int sg_start_io(Rq_elem * rep);
-int sg_finish_io(int wr, Rq_elem * rep);
+static int sg_finish_io(int wr, Rq_elem * rep);
 
 
-static void install_handler (int sig_num, void (*sig_handler) (int sig))
+static void
+install_handler (int sig_num, void (*sig_handler) (int sig))
 {
     struct sigaction sigact;
     sigaction (sig_num, NULL, &sigact);
@@ -165,7 +163,8 @@ static void install_handler (int sig_num, void (*sig_handler) (int sig))
     }
 }
 
-void print_stats()
+static void
+print_stats()
 {
     int infull, outfull;
 
@@ -177,7 +176,8 @@ void print_stats()
     fprintf(stderr, "%d+%d records out\n", outfull, rcoll.out_partial);
 }
 
-static void interrupt_handler(int sig)
+static void
+interrupt_handler(int sig)
 {
     struct sigaction sigact;
 
@@ -190,14 +190,16 @@ static void interrupt_handler(int sig)
     kill (getpid (), sig);
 }
 
-static void siginfo_handler(int sig)
+static void
+siginfo_handler(int sig)
 {
     fprintf(stderr, "Progress report, continuing ...\n");
     print_stats ();
     if (sig) { }        /* suppress unused warning */
 }
 
-int dd_filetype(const char * filename)
+static int
+dd_filetype(const char * filename)
 {
     struct stat st;
 
@@ -212,7 +214,8 @@ int dd_filetype(const char * filename)
     return FT_OTHER;
 }
 
-void usage()
+static void
+usage()
 {
     fprintf(stderr, "Usage: "
            "sgq_dd  [if=<infile>] [skip=<n>] [of=<ofile>] [seek=<n>] "
@@ -232,7 +235,8 @@ void usage()
 }
 
 /* Returns -1 for error, 0 for nothing found, QS_IN_POLL or QS_OUT_POLL */
-int do_poll(Rq_coll * clp, int timeout, int * req_indexp)
+static int
+do_poll(Rq_coll * clp, int timeout, int * req_indexp)
 {
     int k, res;
 
@@ -277,7 +281,8 @@ int do_poll(Rq_coll * clp, int timeout, int * req_indexp)
 
 
 /* Return of 0 -> success, -1 -> failure, 2 -> try again */
-int read_capacity(int sg_fd, int * num_sect, int * sect_sz)
+static int
+read_capacity(int sg_fd, int * num_sect, int * sect_sz)
 {
     int res;
     unsigned char rcCmdBlk [10] = {0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0};
@@ -307,10 +312,8 @@ int read_capacity(int sg_fd, int * num_sect, int * sect_sz)
         sg_chk_n_print3("read capacity", &io_hdr, 1);
         return -1;
     }
-    *num_sect = 1 + ((rcBuff[0] << 24) | (rcBuff[1] << 16) |
-                (rcBuff[2] << 8) | rcBuff[3]);
-    *sect_sz = (rcBuff[4] << 24) | (rcBuff[5] << 16) |
-               (rcBuff[6] << 8) | rcBuff[7];
+    *num_sect = 1 + sg_get_unaligned_be32(rcBuff + 0);
+    *sect_sz = sg_get_unaligned_be32(rcBuff + 4);
 #ifdef SG_DEBUG
     fprintf(stderr, "number of sectors=%d, sector size=%d\n",
             *num_sect, *sect_sz);
@@ -319,7 +322,8 @@ int read_capacity(int sg_fd, int * num_sect, int * sect_sz)
 }
 
 /* 0 -> ok, 1 -> short read, -1 -> error */
-int normal_in_operation(Rq_coll * clp, Rq_elem * rep, int blocks)
+static int
+normal_in_operation(Rq_coll * clp, Rq_elem * rep, int blocks)
 {
     int res;
     int stop_after_write = 0;
@@ -357,7 +361,8 @@ int normal_in_operation(Rq_coll * clp, Rq_elem * rep, int blocks)
 }
 
 /* 0 -> ok, -1 -> error */
-int normal_out_operation(Rq_coll * clp, Rq_elem * rep, int blocks)
+static int
+normal_out_operation(Rq_coll * clp, Rq_elem * rep, int blocks)
 {
     int res;
 
@@ -387,7 +392,8 @@ int normal_out_operation(Rq_coll * clp, Rq_elem * rep, int blocks)
 }
 
 /* Returns 1 for retryable, 0 for ok, -ve for error */
-int sg_fin_in_operation(Rq_coll * clp, Rq_elem * rep)
+static int
+sg_fin_in_operation(Rq_coll * clp, Rq_elem * rep)
 {
     int res;
 
@@ -416,7 +422,8 @@ int sg_fin_in_operation(Rq_coll * clp, Rq_elem * rep)
 }
 
 /* Returns 1 for retryable, 0 for ok, -ve for error */
-int sg_fin_out_operation(Rq_coll * clp, Rq_elem * rep)
+static int
+sg_fin_out_operation(Rq_coll * clp, Rq_elem * rep)
 {
     int res;
 
@@ -443,7 +450,8 @@ int sg_fin_out_operation(Rq_coll * clp, Rq_elem * rep)
     return res;
 }
 
-int sg_start_io(Rq_elem * rep)
+static int
+sg_start_io(Rq_elem * rep)
 {
     sg_io_hdr_t * hp = &rep->io_hdr;
     int res;
@@ -451,12 +459,8 @@ int sg_start_io(Rq_elem * rep)
     rep->qstate = rep->wr ? QS_OUT_STARTED : QS_IN_STARTED;
     memset(rep->cmd, 0, sizeof(rep->cmd));
     rep->cmd[0] = rep->wr ? SGP_WRITE10 : SGP_READ10;
-    rep->cmd[2] = (unsigned char)((rep->blk >> 24) & 0xFF);
-    rep->cmd[3] = (unsigned char)((rep->blk >> 16) & 0xFF);
-    rep->cmd[4] = (unsigned char)((rep->blk >> 8) & 0xFF);
-    rep->cmd[5] = (unsigned char)(rep->blk & 0xFF);
-    rep->cmd[7] = (unsigned char)((rep->num_blks >> 8) & 0xff);
-    rep->cmd[8] = (unsigned char)(rep->num_blks & 0xff);
+    sg_put_unaligned_be32((uint32_t)rep->blk, rep->cmd + 2);
+    sg_put_unaligned_be16((uint16_t)rep->num_blks, rep->cmd + 7);
     memset(hp, 0, sizeof(sg_io_hdr_t));
     hp->interface_id = 'S';
     hp->cmd_len = sizeof(rep->cmd);
@@ -491,7 +495,8 @@ int sg_start_io(Rq_elem * rep)
 }
 
 /* -1 -> unrecoverable error, 0 -> successful, 1 -> try again */
-int sg_finish_io(int wr, Rq_elem * rep)
+static int
+sg_finish_io(int wr, Rq_elem * rep)
 {
     int res;
     sg_io_hdr_t io_hdr;
@@ -555,7 +560,8 @@ int sg_finish_io(int wr, Rq_elem * rep)
 }
 
 /* Returns scsi_type or -1 for error */
-int sg_prepare(int fd, int sz)
+static int
+sg_prepare(int fd, int sz)
 {
     int res, t;
     struct sg_scsi_id info;
@@ -584,7 +590,8 @@ int sg_prepare(int fd, int sz)
 }
 
 /* Return 0 for ok, anything else for errors */
-int prepare_rq_elems(Rq_coll * clp, const char * inf, const char * outf)
+static int
+prepare_rq_elems(Rq_coll * clp, const char * inf, const char * outf)
 {
     int k;
     Rq_elem * rep;
@@ -658,7 +665,8 @@ int prepare_rq_elems(Rq_coll * clp, const char * inf, const char * outf)
 
 /* Returns a "QS" code and req index, or QS_IDLE and position of first idle
    (-1 if no idle position). Returns -1 on poll error. */
-int decider(Rq_coll * clp, int first_xfer, int * req_indexp)
+static int
+decider(Rq_coll * clp, int first_xfer, int * req_indexp)
 {
     int k, res;
     Rq_elem * rep;
@@ -705,7 +713,8 @@ int decider(Rq_coll * clp, int first_xfer, int * req_indexp)
 }
 
 
-int main(int argc, char * argv[])
+int
+main(int argc, char * argv[])
 {
     int skip = 0;
     int seek = 0;

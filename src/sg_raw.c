@@ -1,7 +1,7 @@
 /*
  * A utility program originally written for the Linux OS SCSI subsystem.
  *
- * Copyright (C) 2000-2014 Ingo van Lil <inguin@gmx.de>
+ * Copyright (C) 2000-2015 Ingo van Lil <inguin@gmx.de>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,14 +20,16 @@
 #include <stdio.h>
 #include <string.h>
 #include <getopt.h>
+#include <inttypes.h>
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
 #include "sg_lib.h"
 #include "sg_pt.h"
+#include "sg_pr2serr.h"
 
-#define SG_RAW_VERSION "0.4.9 (2014-05-14)"
+#define SG_RAW_VERSION "0.4.14 (2015-12-19)"
 
 #ifdef SG_LIB_WIN32
 #ifndef HAVE_SYSCONF
@@ -85,11 +87,11 @@ struct opts_t {
     int do_version;
 };
 
+
 static void
 version()
 {
-    fprintf(stderr,
-            "sg_raw " SG_RAW_VERSION "\n"
+    pr2serr("sg_raw " SG_RAW_VERSION "\n"
             "Copyright (C) 2007-2012 Ingo van Lil <inguin@gmx.de>\n"
             "This is free software.  You may redistribute copies of it "
             "under the terms of\n"
@@ -101,8 +103,7 @@ version()
 static void
 usage()
 {
-    fprintf(stderr,
-            "Usage: sg_raw [OPTION]* DEVICE CDB0 CDB1 ...\n"
+    pr2serr("Usage: sg_raw [OPTION]* DEVICE CDB0 CDB1 ...\n"
             "\n"
             "Options:\n"
             "  -b, --binary           Dump data in binary form, even when "
@@ -125,8 +126,8 @@ usage()
             "  -V, --version          Show version information and exit\n"
             "\n"
             "Between 6 and 256 command bytes (two hex digits each) can be "
-            "specified\nand will be sent to DEVICE. Bidirectional commands "
-            "accepted.\n\n"
+            "specified\nand will be sent to DEVICE. Lengths RLEN and SLEN "
+            "are decimal by\ndefault. Bidirectional commands accepted.\n\n"
             "Simple example: Perform INQUIRY on /dev/sg0:\n"
             "  sg_raw -r 1k /dev/sg0 12 00 00 00 60 00\n");
 }
@@ -151,7 +152,7 @@ process_cl(struct opts_t * op, int argc, char *argv[])
             return 0;
         case 'i':
             if (op->dataout_file) {
-                fprintf(stderr, "Too many '--infile=' options\n");
+                pr2serr("Too many '--infile=' options\n");
                 return SG_LIB_SYNTAX_ERROR;
             }
             op->dataout_file = optarg;
@@ -159,7 +160,7 @@ process_cl(struct opts_t * op, int argc, char *argv[])
         case 'k':
             n = sg_get_num(optarg);
             if (n < 0) {
-                fprintf(stderr, "Invalid argument to '--skip'\n");
+                pr2serr("Invalid argument to '--skip'\n");
                 return SG_LIB_SYNTAX_ERROR;
             }
             op->dataout_offset = n;
@@ -169,7 +170,7 @@ process_cl(struct opts_t * op, int argc, char *argv[])
             break;
         case 'o':
             if (op->datain_file) {
-                fprintf(stderr, "Too many '--outfile=' options\n");
+                pr2serr("Too many '--outfile=' options\n");
                 return SG_LIB_SYNTAX_ERROR;
             }
             op->datain_file = optarg;
@@ -178,7 +179,7 @@ process_cl(struct opts_t * op, int argc, char *argv[])
             op->do_datain = 1;
             n = sg_get_num(optarg);
             if (n < 0 || n > MAX_SCSI_DXLEN) {
-                fprintf(stderr, "Invalid argument to '--request'\n");
+                pr2serr("Invalid argument to '--request'\n");
                 return SG_LIB_SYNTAX_ERROR;
             }
             op->datain_len = n;
@@ -190,7 +191,7 @@ process_cl(struct opts_t * op, int argc, char *argv[])
             op->do_dataout = 1;
             n = sg_get_num(optarg);
             if (n < 0 || n > MAX_SCSI_DXLEN) {
-                fprintf(stderr, "Invalid argument to '--send'\n");
+                pr2serr("Invalid argument to '--send'\n");
                 return SG_LIB_SYNTAX_ERROR;
             }
             op->dataout_len = n;
@@ -198,7 +199,7 @@ process_cl(struct opts_t * op, int argc, char *argv[])
         case 't':
             n = sg_get_num(optarg);
             if (n < 0) {
-                fprintf(stderr, "Invalid argument to '--timeout'\n");
+                pr2serr("Invalid argument to '--timeout'\n");
                 return SG_LIB_SYNTAX_ERROR;
             }
             op->timeout = n;
@@ -215,7 +216,7 @@ process_cl(struct opts_t * op, int argc, char *argv[])
     }
 
     if (optind >= argc) {
-        fprintf(stderr, "No device specified\n");
+        pr2serr("No device specified\n");
         return SG_LIB_SYNTAX_ERROR;
     }
     op->device_name = argv[optind];
@@ -226,12 +227,12 @@ process_cl(struct opts_t * op, int argc, char *argv[])
         char *endptr;
         int cmd = strtol(opt, &endptr, 16);
         if (*opt == '\0' || *endptr != '\0' || cmd < 0x00 || cmd > 0xff) {
-            fprintf(stderr, "Invalid command byte '%s'\n", opt);
+            pr2serr("Invalid command byte '%s'\n", opt);
             return SG_LIB_SYNTAX_ERROR;
         }
 
         if (op->cdb_length > MAX_SCSI_CDBSZ) {
-            fprintf(stderr, "CDB too long (max. %d bytes)\n", MAX_SCSI_CDBSZ);
+            pr2serr("CDB too long (max. %d bytes)\n", MAX_SCSI_CDBSZ);
             return SG_LIB_SYNTAX_ERROR;
         }
         op->cdb[op->cdb_length] = cmd;
@@ -239,18 +240,32 @@ process_cl(struct opts_t * op, int argc, char *argv[])
     }
 
     if (op->cdb_length < MIN_SCSI_CDBSZ) {
-        fprintf(stderr, "CDB too short (min. %d bytes)\n", MIN_SCSI_CDBSZ);
+        pr2serr("CDB too short (min. %d bytes)\n", MIN_SCSI_CDBSZ);
         return SG_LIB_SYNTAX_ERROR;
     }
+    if (op->do_verbose > 1) {
+        int sa;
+        char b[80];
 
+        if (op->cdb_length > 16) {
+            sa = (op->cdb[8] << 8) + op->cdb[9];
+            if (0x7f != op->cdb[0])
+                printf(">>> Unlikely to be SCSI CDB since all over 16 "
+                       "bytes long should\n>>> start with 0x7f\n");
+        } else
+            sa = op->cdb[1] & 0x1f;
+        sg_get_opcode_sa_name(op->cdb[0], sa, 0, sizeof(b), b);
+        printf("Attempt to decode cdb name: %s\n", b);
+    }
     return 0;
 }
 
 /* Allocate aligned memory (heap) starting on page boundary */
 static unsigned char *
-my_memalign(int length, unsigned char ** wrkBuffp)
+my_memalign(int length, unsigned char ** wrkBuffp, const struct opts_t * op)
 {
     size_t psz;
+    unsigned char * res;
 
 #if defined(HAVE_SYSCONF) && defined(_SC_PAGESIZE)
     psz = sysconf(_SC_PAGESIZE); /* POSIX.1 (was getpagesize()) */
@@ -267,14 +282,17 @@ my_memalign(int length, unsigned char ** wrkBuffp)
 
         err = posix_memalign(&wp, psz, length);
         if (err || (NULL == wp)) {
-            fprintf(stderr, "posix_memalign: error [%d], out of memory?\n",
-                    err);
+            pr2serr("posix_memalign: error [%d], out of memory?\n", err);
             return NULL;
         }
         memset(wp, 0, length);
         if (wrkBuffp)
             *wrkBuffp = (unsigned char *)wp;
-        return (unsigned char *)wp;
+        res = (unsigned char *)wp;
+        if (op->do_verbose > 3)
+            pr2serr("%s: posix, len=%d, wrkBuffp=%p, psz=%d, rp=%p\n",
+                    __func__, length, *wrkBuffp, (int)psz, res);
+        return res;
     }
 #else
     {
@@ -287,8 +305,12 @@ my_memalign(int length, unsigned char ** wrkBuffp)
             return NULL;
         } else if (wrkBuffp)
             *wrkBuffp = wrkBuff;
-        return (unsigned char *)(((unsigned long)wrkBuff + psz - 1) &
-                                 (~(psz - 1)));
+        res = (unsigned char *)(((uintptr_t)wrkBuff + psz - 1) &
+                                (~(psz - 1)));
+        if (op->do_verbose > 3)
+            pr2serr("%s: hack, len=%d, wrkBuffp=%p, psz=%d, rp=%p\n",
+                    __func__, length, *wrkBuffp, (int)psz, res);
+        return res;
     }
 #endif
 }
@@ -314,7 +336,7 @@ skip(int fd, off_t offset)
             perror("Error reading input data");
             return SG_LIB_FILE_ERROR;
         } else if (done == 0) {
-            fprintf(stderr, "EOF on input file/stream\n");
+            pr2serr("EOF on input file/stream\n");
             return SG_LIB_FILE_ERROR;
         } else {
             remain -= done;
@@ -353,7 +375,7 @@ fetch_dataout(struct opts_t * op)
         }
     }
 
-    buf = my_memalign(op->dataout_len, &wrkBuf);
+    buf = my_memalign(op->dataout_len, &wrkBuf, op);
     if (buf == NULL) {
         perror("malloc");
         goto bail;
@@ -364,7 +386,7 @@ fetch_dataout(struct opts_t * op)
         perror("Failed to read input data");
         goto bail;
     } else if (len < op->dataout_len) {
-        fprintf(stderr, "EOF on input file/stream\n");
+        pr2serr("EOF on input file/stream\n");
         goto bail;
     }
 
@@ -425,7 +447,7 @@ main(int argc, char *argv[])
     unsigned char sense_buffer[32];
     unsigned char * dxfer_buffer_in = NULL;
     unsigned char * dxfer_buffer_out = NULL;
-    unsigned char *wrkBuf = NULL;
+    unsigned char * wrkBuf = NULL;
     struct opts_t opts;
     struct opts_t * op;
     char b[128];
@@ -448,29 +470,32 @@ main(int argc, char *argv[])
     sg_fd = scsi_pt_open_device(op->device_name, op->readonly,
                                 op->do_verbose);
     if (sg_fd < 0) {
-        fprintf(stderr, "%s: %s\n", op->device_name, safe_strerror(-sg_fd));
+        pr2serr("%s: %s\n", op->device_name, safe_strerror(-sg_fd));
         ret = SG_LIB_FILE_ERROR;
         goto done;
     }
 
     ptvp = construct_scsi_pt_obj();
     if (ptvp == NULL) {
-        fprintf(stderr, "out of memory\n");
+        pr2serr("out of memory\n");
         ret = SG_LIB_CAT_OTHER;
         goto done;
     }
     if (op->do_verbose) {
-        fprintf(stderr, "    cdb to send: ");
+        pr2serr("    cdb to send: ");
         for (k = 0; k < op->cdb_length; ++k)
-            fprintf(stderr, "%02x ", op->cdb[k]);
-        fprintf(stderr, "\n");
-        if (op->do_verbose > 2) {
+            pr2serr("%02x ", op->cdb[k]);
+        pr2serr("\n");
+        if (op->do_verbose > 1) {
             sg_get_command_name(op->cdb, 0, sizeof(b) - 1, b);
             b[sizeof(b) - 1] = '\0';
-            fprintf(stderr, "    Command name: %s\n", b);
+            pr2serr("    Command name: %s\n", b);
         }
     }
     set_scsi_pt_cdb(ptvp, op->cdb, op->cdb_length);
+    if (op->do_verbose > 2)
+        pr2serr("sense_buffer=%p, length=%d\n", sense_buffer,
+                (int)sizeof(sense_buffer));
     set_scsi_pt_sense(ptvp, sense_buffer, sizeof(sense_buffer));
 
     if (op->do_dataout) {
@@ -479,31 +504,37 @@ main(int argc, char *argv[])
             ret = SG_LIB_CAT_OTHER;
             goto done;
         }
+        if (op->do_verbose > 2)
+            pr2serr("dxfer_buffer_out=%p, length=%d\n", dxfer_buffer_out,
+                    op->dataout_len);
         set_scsi_pt_data_out(ptvp, dxfer_buffer_out, op->dataout_len);
     }
     if (op->do_datain) {
-        dxfer_buffer_in = my_memalign(op->datain_len, &wrkBuf);
+        dxfer_buffer_in = my_memalign(op->datain_len, &wrkBuf, op);
         if (dxfer_buffer_in == NULL) {
             perror("malloc");
             ret = SG_LIB_CAT_OTHER;
             goto done;
         }
+        if (op->do_verbose > 2)
+            pr2serr("dxfer_buffer_in=%p, length=%d\n", dxfer_buffer_in,
+                    op->datain_len);
         set_scsi_pt_data_in(ptvp, dxfer_buffer_in, op->datain_len);
     }
 
     ret = do_scsi_pt(ptvp, sg_fd, op->timeout, op->do_verbose);
     if (ret > 0) {
         if (SCSI_PT_DO_BAD_PARAMS == ret) {
-            fprintf(stderr, "do_scsi_pt: bad pass through setup\n");
+            pr2serr("do_scsi_pt: bad pass through setup\n");
             ret = SG_LIB_CAT_OTHER;
         } else if (SCSI_PT_DO_TIMEOUT == ret) {
-            fprintf(stderr, "do_scsi_pt: timeout\n");
+            pr2serr("do_scsi_pt: timeout\n");
             ret = SG_LIB_CAT_TIMEOUT;
         } else
             ret = SG_LIB_CAT_OTHER;
         goto done;
     } else if (ret < 0) {
-        fprintf(stderr, "do_scsi_pt: %s\n", safe_strerror(-ret));
+        pr2serr("do_scsi_pt: %s\n", safe_strerror(-ret));
         ret = SG_LIB_CAT_OTHER;
         goto done;
     }
@@ -520,35 +551,34 @@ main(int argc, char *argv[])
         break;
     case SCSI_PT_RESULT_TRANSPORT_ERR:
         get_scsi_pt_transport_err_str(ptvp, sizeof(b), b);
-        fprintf(sg_warnings_strm, ">>> transport error: %s\n", b);
+        pr2serr(">>> transport error: %s\n", b);
         ret = SG_LIB_CAT_OTHER;
         break;
     case SCSI_PT_RESULT_OS_ERR:
         get_scsi_pt_os_err_str(ptvp, sizeof(b), b);
-        fprintf(sg_warnings_strm, ">>> os error: %s\n", b);
+        pr2serr(">>> os error: %s\n", b);
         ret = SG_LIB_CAT_OTHER;
         break;
     default:
-        fprintf(sg_warnings_strm, ">>> unknown pass through result "
-                "category (%d)\n", res_cat);
+        pr2serr(">>> unknown pass through result category (%d)\n", res_cat);
         ret = SG_LIB_CAT_OTHER;
         break;
     }
 
     status = get_scsi_pt_status_response(ptvp);
-    fprintf(stderr, "SCSI Status: ");
+    pr2serr("SCSI Status: ");
     sg_print_scsi_status(status);
-    fprintf(stderr, "\n\n");
+    pr2serr("\n\n");
     if ((SAM_STAT_CHECK_CONDITION == status) && (! op->no_sense)) {
         if (SCSI_PT_RESULT_SENSE != res_cat)
             slen = get_scsi_pt_sense_len(ptvp);
         if (0 == slen)
-            fprintf(stderr, ">>> Strange: status is CHECK CONDITION but no "
-                    "Sense Information\n");
+            pr2serr(">>> Strange: status is CHECK CONDITION but no Sense "
+                    "Information\n");
         else {
-            fprintf(stderr, "Sense Information:\n");
+            pr2serr("Sense Information:\n");
             sg_print_sense(NULL, sense_buffer, slen, (op->do_verbose > 0));
-            fprintf(stderr, "\n");
+            pr2serr("\n");
         }
     }
     if (SAM_STAT_RESERVATION_CONFLICT == status)
@@ -556,11 +586,15 @@ main(int argc, char *argv[])
 
     if (op->do_datain) {
         int data_len = op->datain_len - get_scsi_pt_resid(ptvp);
-        if (data_len == 0) {
-            fprintf(stderr, "No data received\n");
+
+        if (ret && !(SG_LIB_CAT_RECOVERED == ret ||
+                     SG_LIB_CAT_NO_SENSE == ret))
+            pr2serr("Error %d occurred, no data received\n", ret);
+        else if (data_len == 0) {
+            pr2serr("No data received\n");
         } else {
             if (op->datain_file == NULL && !op->datain_binary) {
-                fprintf(stderr, "Received %d bytes of data:\n", data_len);
+                pr2serr("Received %d bytes of data:\n", data_len);
                 dStrHexErr((const char *)dxfer_buffer_in, data_len, 0);
             } else {
                 const char * cp = "stdout";
@@ -569,8 +603,7 @@ main(int argc, char *argv[])
                     ! ((1 == strlen(op->datain_file)) &&
                        ('-' == op->datain_file[0])))
                     cp = op->datain_file;
-                fprintf(stderr, "Writing %d bytes of data to %s\n", data_len,
-                        cp);
+                pr2serr("Writing %d bytes of data to %s\n", data_len, cp);
                 ret2 = write_dataout(op->datain_file, dxfer_buffer_in,
                                      data_len);
                 if (0 != ret2) {
@@ -585,7 +618,7 @@ main(int argc, char *argv[])
 done:
     if (op->do_verbose) {
         sg_get_category_sense_str(ret, sizeof(b), b, op->do_verbose - 1);
-        fprintf(stderr, "%s\n", b);
+        pr2serr("%s\n", b);
     }
     if (wrkBuf)
         free(wrkBuf);

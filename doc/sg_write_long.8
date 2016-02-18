@@ -1,4 +1,4 @@
-.TH SG_WRITE_LONG "8" "February 2013" "sg3_utils\-1.36" SG3_UTILS
+.TH SG_WRITE_LONG "8" "January 2016" "sg3_utils\-1.42" SG3_UTILS
 .SH NAME
 sg_write_long \- send SCSI WRITE LONG command
 .SH SYNOPSIS
@@ -41,6 +41,11 @@ aside for this purpose. If in doubt it is probably safest to clear the
 ARRE and AWRE bits. These bits can be checked and modified with the
 sdparm utility.  For example: "sdparm \-c AWRE,ARRE /dev/sda" will clear
 the bits until the disk is power cycled.
+.PP
+In SBC\-4 revision 7 all uses of SCSI WRITE LONG (10 and 16 byte) commands
+were made obsolete apart from the case in which the WR_UNCOR bit is set.
+The SCSI READ LONG (10 and 16 byte) commands were made obsolete in the
+same revision.
 .SH OPTIONS
 Arguments to long options are mandatory for short options as well.
 .TP
@@ -163,7 +168,7 @@ Written by Saeed Bishara. Further work by Douglas Gilbert.
 .SH "REPORTING BUGS"
 Report bugs to <dgilbert at interlog dot com>.
 .SH COPYRIGHT
-Copyright \(co 2004\-2013 Douglas Gilbert
+Copyright \(co 2004\-2016 Douglas Gilbert
 .br
 This software is distributed under the GPL version 2. There is NO
 warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.

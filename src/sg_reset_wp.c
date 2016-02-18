@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014 Douglas Gilbert.
+ * Copyright (c) 2014-2015 Douglas Gilbert.
  * All rights reserved.
  * Use of this source code is governed by a BSD-style
  * license that can be found in the BSD_LICENSE file.
@@ -9,7 +9,6 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdarg.h>
 #include <string.h>
 #include <ctype.h>
 #include <getopt.h>
@@ -20,27 +19,30 @@
 #include "config.h"
 #endif
 #include "sg_lib.h"
+#include "sg_lib_data.h"
 #include "sg_pt.h"
 #include "sg_cmds_basic.h"
+#include "sg_unaligned.h"
+#include "sg_pr2serr.h"
 
 /* A utility program originally written for the Linux OS SCSI subsystem.
  *
  *
  * This program issues the SCSI RESET WRITE POINTER command to the given SCSI
- * device.
+ * device. Based on zbc-r04c.pdf .
  */
 
-static const char * version_str = "1.01 20140604";
+static const char * version_str = "1.04 20151219";
 
-#define SERVICE_ACTION_OUT_16_CMD 0x9f
-#define SERVICE_ACTION_OUT_16_CMDLEN 16
-#define RESET_WRITE_POINTER_SA 0x14
+#define SG_ZONING_OUT_CMDLEN 16
+#define RESET_WRITE_POINTER_SA 0x4
 
 #define SENSE_BUFF_LEN 64       /* Arbitrary, could be larger */
 #define DEF_PT_TIMEOUT  60      /* 60 seconds */
 
 
 static struct option long_options[] = {
+        {"all", no_argument, 0, 'a'},
         {"help", no_argument, 0, 'h'},
         {"reset-all", no_argument, 0, 'R'},
         {"reset_all", no_argument, 0, 'R'},
@@ -51,35 +53,15 @@ static struct option long_options[] = {
 };
 
 
-#ifdef __GNUC__
-static int pr2serr(const char * fmt, ...)
-        __attribute__ ((format (printf, 1, 2)));
-#else
-static int pr2serr(const char * fmt, ...);
-#endif
-
-
-static int
-pr2serr(const char * fmt, ...)
-{
-    va_list args;
-    int n;
-
-    va_start(args, fmt);
-    n = vfprintf(stderr, fmt, args);
-    va_end(args);
-    return n;
-}
-
 static void
 usage()
 {
     pr2serr("Usage: "
-            "sg_reset_wp  [--help] [--reset-all] [--verbose] [--version]\n"
+            "sg_reset_wp  [--all] [--help] [--verbose] [--version]\n"
             "                    [--zone=ID] DEVICE\n");
     pr2serr("  where:\n"
+            "    --all|-a           sets the ALL flag in the cdb\n"
             "    --help|-h          print out usage message\n"
-            "    --reset-all|-R     sets the RESET ALL flag in the cdb\n"
             "    --verbose|-v       increase verbosity\n"
             "    --version|-V       print version string and exit\n\n"
             "    --zone=ID|-z ID    ID is the starting LBA of the zone "
@@ -87,36 +69,28 @@ usage()
             "                       write pointer is to be reset\n"
             "Performs a SCSI RESET WRITE POINTER command. ID is decimal by "
             "default,\nfor hex use a leading '0x' or a trailing 'h'. "
-            "Either the --zone=ID\nor --reset-all needs to be given.\n");
+            "Either the --zone=ID\nor --all option needs to be given.\n");
 }
 
 /* Invokes a SCSI RESET WRITE POINTER command (ZBC).  Return of 0 -> success,
  * various SG_LIB_CAT_* positive values or -1 -> other errors */
 static int
-sg_ll_reset_write_pointer(int sg_fd, uint64_t zid, int reset_all, int noisy,
+sg_ll_reset_write_pointer(int sg_fd, uint64_t zid, int all, int noisy,
                           int verbose)
 {
     int k, ret, res, sense_cat;
-    unsigned char rwpCmdBlk[SERVICE_ACTION_OUT_16_CMDLEN] =
-          {SERVICE_ACTION_OUT_16_CMD, RESET_WRITE_POINTER_SA, 0, 0,
-           0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0};
+    unsigned char rwpCmdBlk[SG_ZONING_OUT_CMDLEN] =
+          {SG_ZONING_OUT, RESET_WRITE_POINTER_SA, 0, 0, 0, 0, 0, 0,
+           0, 0, 0, 0,  0, 0, 0, 0};
     unsigned char sense_b[SENSE_BUFF_LEN];
     struct sg_pt_base * ptvp;
 
-    /* assume zbc-r01a is wrong and that ZS LBA is an 8 byte field */
-    rwpCmdBlk[2] = (zid >> 56) & 0xff;
-    rwpCmdBlk[3] = (zid >> 48) & 0xff;
-    rwpCmdBlk[4] = (zid >> 40) & 0xff;
-    rwpCmdBlk[5] = (zid >> 32) & 0xff;
-    rwpCmdBlk[6] = (zid >> 24) & 0xff;
-    rwpCmdBlk[7] = (zid >> 16) & 0xff;
-    rwpCmdBlk[8] = (zid >> 8) & 0xff;
-    rwpCmdBlk[9] = zid & 0xff;
-    if (reset_all)
+    sg_put_unaligned_be64(zid, rwpCmdBlk + 2);
+    if (all)
         rwpCmdBlk[14] = 0x1;
     if (verbose) {
         pr2serr("    Reset write pointer cdb: ");
-        for (k = 0; k < SERVICE_ACTION_OUT_16_CMDLEN; ++k)
+        for (k = 0; k < SG_ZONING_OUT_CMDLEN; ++k)
             pr2serr("%02x ", rwpCmdBlk[k]);
         pr2serr("\n");
     }
@@ -154,7 +128,7 @@ int
 main(int argc, char * argv[])
 {
     int sg_fd, res, c;
-    int reset_all = 0;
+    int all = 0;
     int verbose = 0;
     int zid_given = 0;
     uint64_t zid = 0;
@@ -165,19 +139,20 @@ main(int argc, char * argv[])
     while (1) {
         int option_index = 0;
 
-        c = getopt_long(argc, argv, "hRvVz:", long_options,
+        c = getopt_long(argc, argv, "ahRvVz:", long_options,
                         &option_index);
         if (c == -1)
             break;
 
         switch (c) {
+        case 'a':
+        case 'R':
+            ++all;
+            break;
         case 'h':
         case '?':
             usage();
             return 0;
-        case 'R':
-            ++reset_all;
-            break;
         case 'v':
             ++verbose;
             break;
@@ -187,7 +162,7 @@ main(int argc, char * argv[])
         case 'z':
             ll = sg_get_llnum(optarg);
             if (-1 == ll) {
-                fprintf(stderr, "bad argument to '--zone=ID'\n");
+                pr2serr("bad argument to '--zone=ID'\n");
                 return SG_LIB_SYNTAX_ERROR;
             }
             zid = (uint64_t)ll;
@@ -213,8 +188,8 @@ main(int argc, char * argv[])
         }
     }
 
-    if ((! zid_given) && (0 == reset_all)) {
-        pr2serr("either the --zone=ID or --reset-all option is required\n");
+    if ((! zid_given) && (0 == all)) {
+        pr2serr("either the --zone=ID or --all option is required\n");
         usage();
         return SG_LIB_SYNTAX_ERROR;
     }
@@ -231,7 +206,7 @@ main(int argc, char * argv[])
         return SG_LIB_FILE_ERROR;
     }
 
-    res = sg_ll_reset_write_pointer(sg_fd, zid, reset_all, 1, verbose);
+    res = sg_ll_reset_write_pointer(sg_fd, zid, all, 1, verbose);
     ret = res;
     if (res) {
         if (SG_LIB_CAT_INVALID_OP == res)

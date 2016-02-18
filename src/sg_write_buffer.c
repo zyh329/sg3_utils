@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006-2014 Luben Tuikov and Douglas Gilbert.
+ * Copyright (c) 2006-2015 Luben Tuikov and Douglas Gilbert.
  * All rights reserved.
  * Use of this source code is governed by a BSD-style
  * license that can be found in the BSD_LICENSE file.
@@ -9,10 +9,11 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdarg.h>
 #include <ctype.h>
 #include <string.h>
 #include <getopt.h>
+#define __STDC_FORMAT_MACROS 1
+#include <inttypes.h>
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
@@ -21,12 +22,14 @@
 #include "sg_cmds_basic.h"
 #include "sg_cmds_extra.h"
 #include "sg_pt.h"      /* needed for scsi_pt_win32_direct() */
+#include "sg_unaligned.h"
+#include "sg_pr2serr.h"
 
 /*
  * This utility issues the SCSI WRITE BUFFER command to the given device.
  */
 
-static const char * version_str = "1.15 20140518";    /* spc4r37 */
+static const char * version_str = "1.21 20151219";    /* spc5r02 */
 
 #define ME "sg_write_buffer: "
 #define DEF_XFER_LEN (8 * 1024 * 1024)
@@ -35,7 +38,7 @@ static const char * version_str = "1.15 20140518";    /* spc4r37 */
 #define WRITE_BUFFER_CMD 0x3b
 #define WRITE_BUFFER_CMDLEN 10
 #define SENSE_BUFF_LEN 64       /* Arbitrary, could be larger */
-#define DEF_PT_TIMEOUT 120       /* 120 seconds, 2 minutes */
+#define DEF_PT_TIMEOUT 300      /* 300 seconds, 5 minutes */
 
 static struct option long_options[] = {
         {"bpw", required_argument, 0, 'b'},
@@ -48,30 +51,11 @@ static struct option long_options[] = {
         {"raw", no_argument, 0, 'r'},
         {"skip", required_argument, 0, 's'},
         {"specific", required_argument, 0, 'S'},
+        {"timeout", required_argument, 0, 't' },
         {"verbose", no_argument, 0, 'v'},
         {"version", no_argument, 0, 'V'},
         {0, 0, 0, 0},
 };
-
-#ifdef __GNUC__
-static int pr2serr(const char * fmt, ...)
-        __attribute__ ((format (printf, 1, 2)));
-#else
-static int pr2serr(const char * fmt, ...);
-#endif
-
-
-static int
-pr2serr(const char * fmt, ...)
-{
-    va_list args;
-    int n;
-
-    va_start(args, fmt);
-    n = vfprintf(stderr, fmt, args);
-    va_end(args);
-    return n;
-}
 
 
 static void
@@ -82,8 +66,8 @@ usage()
             "                       [--length=LEN] [--mode=MO] "
             "[--offset=OFF] [--raw]\n"
             "                       [--skip=SKIP] [--specific=MS] "
-            "[--verbose] [--version]\n"
-            "                       DEVICE\n"
+            "[--timeout=TO]\n"
+            "                       [--verbose] [--version] DEVICE\n"
             "  where:\n"
             "    --bpw=CS|-b CS         CS is chunk size: bytes per write "
             "buffer\n"
@@ -101,17 +85,20 @@ usage()
             "acronym\n"
             "                           (def: 0 -> 'combined header and "
             "data' (obs))\n"
-            "    --off=OFF|-o OFF       buffer offset (unit: bytes, def: 0)\n"
+            "    --offset=OFF|-o OFF    buffer offset (unit: bytes, def: 0)\n"
             "    --raw|-r               read from stdin (same as '-I -')\n"
             "    --skip=SKIP|-s SKIP    bytes in file FILE to skip before "
             "reading\n"
             "    --specific=MS|-S MS    mode specific value; 3 bit field "
             "(0 to 7)\n"
+            "    --timeout=TO|-t TO     command timeout in seconds (def: "
+            "300)\n"
             "    --verbose|-v           increase verbosity\n"
             "    --version|-V           print version string and exit\n\n"
             "Performs one or more SCSI WRITE BUFFER commands. Use '-m xxx' "
-            "to list\navailable modes. Numbers given in options are decimal "
-            "unless they have\na hex indicator.\n"
+            "to list\navailable modes. A chunk size of 4 KB ('--bpw=4k') "
+            "seems to work well.\nExample: sg_write_buffer -b 4k -I xxx.lod "
+            "-m 7 /dev/sg3\n"
           );
 
 }
@@ -132,54 +119,57 @@ usage()
 #define MODE_DNLD_ERR_HISTORY   0x1C
 
 
-static struct mode_s {
+struct mode_s {
         const char *mode_string;
         int   mode;
         const char *comment;
-} modes[] = {
-        { "hd",         MODE_HEADER_DATA, "combined header and data "
-                "(obsolete)"},
-        { "vendor",     MODE_VENDOR,    "vendor specific"},
-        { "data",       MODE_DATA,      "data"},
-        { "dmc",        MODE_DNLD_MC,   "download microcode and activate"},
-        { "dmc_save",   MODE_DNLD_MC_SAVE, "download microcode, save and "
-                "activate"},
-        { "dmc_offs",   MODE_DNLD_MC_OFFS, "download microcode with offsets "
-                "and activate"},
-        { "dmc_offs_save", MODE_DNLD_MC_OFFS_SAVE, "download microcode with "
-                "offsets, save and\n\t\t\t\tactivate"},
-        { "echo",       MODE_ECHO_BUFFER, "write data to echo buffer"},
-        { "dmc_offs_ev_defer", MODE_DNLD_MC_EV_OFFS_DEFER, "download "
-                "microcode with offsets, select\n\t\t\t\tactivation event, "
-                "save and defer activation"},
-        { "dmc_offs_defer", MODE_DNLD_MC_OFFS_DEFER, "download microcode "
-                "with offsets, save and defer\n\t\t\t\tactivation"},
-        { "activate_mc", MODE_ACTIVATE_MC,
-                "activate deferred microcode"},
-        { "en_ex",      MODE_EN_EX_ECHO, "enable expander communications "
-                "protocol and echo\n\t\t\t\tbuffer (obsolete)"},
-        { "dis_ex",     MODE_DIS_EX, "disable expander communications "
-                "protocol\n\t\t\t\t(obsolete)"},
-        { "deh",        MODE_DNLD_ERR_HISTORY, "download application client "
-                "error history "},
 };
 
-#define NUM_MODES       ((int)(sizeof(modes)/sizeof(modes[0])))
+static struct mode_s mode_arr[] = {
+        {"hd",         MODE_HEADER_DATA, "combined header and data "
+                "(obsolete)"},
+        {"vendor",     MODE_VENDOR,    "vendor specific"},
+        {"data",       MODE_DATA,      "data"},
+        {"dmc",        MODE_DNLD_MC,   "download microcode and activate"},
+        {"dmc_save",   MODE_DNLD_MC_SAVE, "download microcode, save and "
+                "activate"},
+        {"dmc_offs",   MODE_DNLD_MC_OFFS, "download microcode with offsets "
+                "and activate"},
+        {"dmc_offs_save", MODE_DNLD_MC_OFFS_SAVE, "download microcode with "
+                "offsets, save and\n\t\t\t\tactivate"},
+        {"echo",       MODE_ECHO_BUFFER, "write data to echo buffer"},
+        {"dmc_offs_ev_defer", MODE_DNLD_MC_EV_OFFS_DEFER, "download "
+                "microcode with offsets, select\n\t\t\t\tactivation event, "
+                "save and defer activation"},
+        {"dmc_offs_defer", MODE_DNLD_MC_OFFS_DEFER, "download microcode "
+                "with offsets, save and\n\t\t\t\tdefer activation"},
+        {"activate_mc", MODE_ACTIVATE_MC, "activate deferred microcode"},
+        {"en_ex",      MODE_EN_EX_ECHO, "enable expander communications "
+                "protocol and\n\t\t\t\techo buffer (obsolete)"},
+        {"dis_ex",     MODE_DIS_EX, "disable expander communications "
+                "protocol\n\t\t\t\t(obsolete)"},
+        {"deh",        MODE_DNLD_ERR_HISTORY, "download application client "
+                "error history "},
+        {NULL, 0, NULL},
+};
 
 static void
 print_modes(void)
 {
-    int k;
+    const struct mode_s * mp;
 
     pr2serr("The modes parameter argument can be numeric (hex or decimal)\n"
             "or symbolic:\n");
-    for (k = 0; k < NUM_MODES; k++) {
-        pr2serr(" %2d (0x%02x)  %-18s%s\n", modes[k].mode, modes[k].mode,
-                modes[k].mode_string, modes[k].comment);
+    for (mp = mode_arr; mp->mode_string; ++mp) {
+        pr2serr(" %2d (0x%02x)  %-18s%s\n", mp->mode, mp->mode,
+                mp->mode_string, mp->comment);
     }
+    pr2serr("\nAdditionally '--bpw=<val>,act' does a activate deferred "
+            "microcode after\nsuccessful dmc_offs_defer and "
+            "dmc_offs_ev_defer mode downloads.\n");
 }
 
-/* <<<< This function will be moved to the library in the future >>> */
+/* <<<< This function may be moved to the library in the future >>> */
 /* Invokes a SCSI WRITE BUFFER command (SPC). Return of 0 ->
  * success, SG_LIB_CAT_INVALID_OP -> invalid opcode,
  * SG_LIB_CAT_ILLEGAL_REQ -> bad field in cdb, SG_LIB_CAT_UNIT_ATTENTION,
@@ -187,24 +177,28 @@ print_modes(void)
  * -1 -> other failure */
 static int
 sg_ll_write_buffer_v2(int sg_fd, int mode, int m_specific, int buffer_id,
-                      int buffer_offset, void * paramp, int param_len,
-                      int noisy, int verbose)
+                      uint32_t buffer_offset, void * paramp,
+                      uint32_t param_len, int to_secs, int noisy, int verbose)
 {
     int k, res, ret, sense_cat;
-    unsigned char wbufCmdBlk[WRITE_BUFFER_CMDLEN] =
+    uint8_t wbufCmdBlk[WRITE_BUFFER_CMDLEN] =
         {WRITE_BUFFER_CMD, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-    unsigned char sense_b[SENSE_BUFF_LEN];
+    uint8_t sense_b[SENSE_BUFF_LEN];
     struct sg_pt_base * ptvp;
 
-    wbufCmdBlk[1] = (unsigned char)(mode & 0x1f);
-    wbufCmdBlk[1] |= (unsigned char)((m_specific & 0x7) << 5);
-    wbufCmdBlk[2] = (unsigned char)(buffer_id & 0xff);
-    wbufCmdBlk[3] = (unsigned char)((buffer_offset >> 16) & 0xff);
-    wbufCmdBlk[4] = (unsigned char)((buffer_offset >> 8) & 0xff);
-    wbufCmdBlk[5] = (unsigned char)(buffer_offset & 0xff);
-    wbufCmdBlk[6] = (unsigned char)((param_len >> 16) & 0xff);
-    wbufCmdBlk[7] = (unsigned char)((param_len >> 8) & 0xff);
-    wbufCmdBlk[8] = (unsigned char)(param_len & 0xff);
+    if (buffer_offset > 0xffffff) {
+        pr2serr("%s: buffer_offset value too large for 24 bits\n", __func__);
+        return -1;
+    }
+    if (param_len > 0xffffff) {
+        pr2serr("%s: param_len value too large for 24 bits\n", __func__);
+        return -1;
+    }
+    wbufCmdBlk[1] = (uint8_t)(mode & 0x1f);
+    wbufCmdBlk[1] |= (uint8_t)((m_specific & 0x7) << 5);
+    wbufCmdBlk[2] = (uint8_t)(buffer_id & 0xff);
+    sg_put_unaligned_be24(buffer_offset, wbufCmdBlk + 3);
+    sg_put_unaligned_be24(param_len, wbufCmdBlk + 6);
     if (verbose) {
         pr2serr("    Write buffer cmd: ");
         for (k = 0; k < WRITE_BUFFER_CMDLEN; ++k)
@@ -220,14 +214,14 @@ sg_ll_write_buffer_v2(int sg_fd, int mode, int m_specific, int buffer_id,
 
     ptvp = construct_scsi_pt_obj();
     if (NULL == ptvp) {
-        pr2serr("write buffer: out of memory\n");
+        pr2serr("%s: out of memory\n", __func__);
         return -1;
     }
     set_scsi_pt_cdb(ptvp, wbufCmdBlk, sizeof(wbufCmdBlk));
     set_scsi_pt_sense(ptvp, sense_b, sizeof(sense_b));
-    set_scsi_pt_data_out(ptvp, (unsigned char *)paramp, param_len);
-    res = do_scsi_pt(ptvp, sg_fd, DEF_PT_TIMEOUT, verbose);
-    ret = sg_cmds_process_resp(ptvp, "write buffer", res, 0, sense_b,
+    set_scsi_pt_data_out(ptvp, (uint8_t *)paramp, param_len);
+    res = do_scsi_pt(ptvp, sg_fd, to_secs, verbose);
+    ret = sg_cmds_process_resp(ptvp, "Write buffer", res, 0, sense_b,
                                noisy, verbose, &sense_cat);
     if (-1 == ret)
         ;
@@ -262,19 +256,21 @@ main(int argc, char * argv[])
     int wb_mode = 0;
     int wb_offset = 0;
     int wb_skip = 0;
+    int wb_timeout = DEF_PT_TIMEOUT;
     int wb_mspec = 0;
     int verbose = 0;
     const char * device_name = NULL;
     const char * file_name = NULL;
     unsigned char * dop = NULL;
     char * cp;
+    const struct mode_s * mp;
     char ebuff[EBUFF_SZ];
     int ret = 0;
 
     while (1) {
         int option_index = 0;
 
-        c = getopt_long(argc, argv, "b:hi:I:l:m:o:rs:S:vV", long_options,
+        c = getopt_long(argc, argv, "b:hi:I:l:m:o:rs:S:t:vV", long_options,
                         &option_index);
         if (c == -1)
             break;
@@ -325,13 +321,13 @@ main(int argc, char * argv[])
                 }
             } else {
                 len = strlen(optarg);
-                for (k = 0; k < NUM_MODES; ++k) {
-                    if (0 == strncmp(modes[k].mode_string, optarg, len)) {
-                        wb_mode = modes[k].mode;
+                for (mp = mode_arr; mp->mode_string; ++mp) {
+                    if (0 == strncmp(mp->mode_string, optarg, len)) {
+                        wb_mode = mp->mode;
                         break;
                     }
                 }
-                if (NUM_MODES == k) {
+                if (! mp->mode_string) {
                     print_modes();
                     return SG_LIB_SYNTAX_ERROR;
                 }
@@ -355,9 +351,16 @@ main(int argc, char * argv[])
             }
             break;
         case 'S':
-           wb_mspec = sg_get_num(optarg);
-           if ((wb_mspec < 0) || (wb_mspec > 7)) {
+            wb_mspec = sg_get_num(optarg);
+            if ((wb_mspec < 0) || (wb_mspec > 7)) {
                 pr2serr("expected argument to '--specific' to be 0 to 7\n");
+                return SG_LIB_SYNTAX_ERROR;
+            }
+            break;
+        case 't':
+            wb_timeout = sg_get_num(optarg);
+            if (wb_timeout < 0) {
+                pr2serr("Invalid argument to '--timeout'\n");
                 return SG_LIB_SYNTAX_ERROR;
             }
             break;
@@ -478,7 +481,12 @@ main(int argc, char * argv[])
                     if (verbose) {
                         pr2serr("tried to read %d bytes from %s, got %d "
                                 "bytes\n", wb_len, file_name, res);
-                        pr2serr("will write %d bytes\n", res);
+                        pr2serr("will write %d bytes", res);
+                        if ((bpw > 0) && (bpw < wb_len))
+                            pr2serr(", %d bytes per WRITE BUFFER command\n",
+                                    bpw);
+                        else
+                            pr2serr("\n");
                     }
                     wb_len = res;
                 }
@@ -499,16 +507,16 @@ main(int argc, char * argv[])
                         " offset=%d, len=%d\n", wb_mode, wb_mspec, wb_id,
                         wb_offset + k, n);
             res = sg_ll_write_buffer_v2(sg_fd, wb_mode, wb_mspec, wb_id,
-                                        wb_offset + k, dop + k, n, 1,
-                                        verbose);
+                                        wb_offset + k, dop + k, n,
+                                        wb_timeout, 1, verbose);
             if (res)
                 break;
         }
         if (bpw_then_activate) {
             if (verbose)
                 pr2serr("sending Activate deferred microcode [0xf]\n");
-            res = sg_ll_write_buffer_v2(sg_fd, 0xf, 0, 0, 0, NULL, 0, 1,
-                                        verbose);
+            res = sg_ll_write_buffer_v2(sg_fd, MODE_ACTIVATE_MC, 0, 0, 0,
+                                        NULL, 0, wb_timeout, 1, verbose);
         }
     } else {
         if (verbose)
@@ -516,7 +524,8 @@ main(int argc, char * argv[])
                     "id=%d, offset=%d, len=%d\n", wb_mode, wb_mspec, wb_id,
                     wb_offset, wb_len);
         res = sg_ll_write_buffer_v2(sg_fd, wb_mode, wb_mspec, wb_id,
-                                    wb_offset, dop, wb_len, 1, verbose);
+                                    wb_offset, dop, wb_len, wb_timeout, 1,
+                                    verbose);
     }
     if (0 != res) {
         char b[80];

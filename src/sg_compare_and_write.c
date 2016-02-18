@@ -1,5 +1,5 @@
 /*
-*  Copyright (c) 2012-2014, Kaminario Technologies LTD
+*  Copyright (c) 2012-2016, Kaminario Technologies LTD
 *  All rights reserved.
 *  Redistribution and use in source and binary forms, with or without
 *  modification, are permitted provided that the following conditions are met:
@@ -31,7 +31,7 @@
 #ifndef __sun
 #define _XOPEN_SOURCE 500
 #ifndef _GNU_SOURCE
-#define _GNU_SOURCE
+#define _GNU_SOURCE 1
 #endif
 #endif
 
@@ -50,8 +50,10 @@
 #include "sg_lib.h"
 #include "sg_cmds_basic.h"
 #include "sg_pt.h"
+#include "sg_unaligned.h"
+#include "sg_pr2serr.h"
 
-static const char * version_str = "1.09 20140516";
+static const char * version_str = "1.14 20160121";
 
 #define DEF_BLOCK_SIZE 512
 #define DEF_NUM_BLOCKS (1)
@@ -111,8 +113,7 @@ struct opts_t {
 static void
 usage()
 {
-        fprintf(stderr, "Usage: "
-                "sg_compare_and_write [--dpo] [--fua] [--fua_nv] "
+        pr2serr("Usage: sg_compare_and_write [--dpo] [--fua] [--fua_nv] "
                 "[--group=GN] [--help]\n"
                 "                            --in=IF [--inw=WF] --lba=LBA "
                 "[--num=NUM]\n"
@@ -137,8 +138,8 @@ usage()
                 "                        not given)\n"
                 "    --inw=WF|-D WF      WF is a file containing a write "
                 "buffer\n"
-                "    --lba=LBA|-l LBA    LBA of the first block of the "
-                "compare and write\n"
+                "    --lba=LBA|-l LBA    LBA of the first block to compare "
+                "and write\n"
                 "    --num=NUM|-n NUM    number of blocks to "
                 "compare/write (def: 1)\n"
                 "    --quiet|-q          suppress MISCOMPARE report to "
@@ -203,8 +204,8 @@ parse_args(int argc, char* argv[], struct opts_t * op)
                         op->flags.group = sg_get_num(optarg);
                         if ((op->flags.group < 0) ||
                             (op->flags.group > 31))  {
-                                fprintf(stderr, "argument to '--group' "
-                                        "expected to be 0 to 31\n");
+                                pr2serr("argument to '--group' expected to "
+                                        "be 0 to 31\n");
                                 goto out_err_no_usage;
                         }
                         break;
@@ -215,7 +216,7 @@ parse_args(int argc, char* argv[], struct opts_t * op)
                 case 'l':
                         ll = sg_get_llnum(optarg);
                         if (-1 == ll) {
-                                fprintf(stderr, "bad argument to '--lba'\n");
+                                pr2serr("bad argument to '--lba'\n");
                                 goto out_err_no_usage;
                         }
                         op->lba = (uint64_t)ll;
@@ -224,8 +225,8 @@ parse_args(int argc, char* argv[], struct opts_t * op)
                 case 'n':
                         op->numblocks = sg_get_num(optarg);
                         if ((op->numblocks < 0) || (op->numblocks > 255))  {
-                                fprintf(stderr, "bad argument to '--num', "
-                                        "expect 0 to 255\n");
+                                pr2serr("bad argument to '--num', expect 0 "
+                                        "to 255\n");
                                 goto out_err_no_usage;
                         }
                         break;
@@ -235,8 +236,7 @@ parse_args(int argc, char* argv[], struct opts_t * op)
                 case 't':
                         op->timeout = sg_get_num(optarg);
                         if (op->timeout < 0)  {
-                                fprintf(stderr, "bad argument to "
-                                        "'--timeout'\n");
+                                pr2serr("bad argument to '--timeout'\n");
                                 goto out_err_no_usage;
                         }
                         break;
@@ -244,27 +244,25 @@ parse_args(int argc, char* argv[], struct opts_t * op)
                         ++op->verbose;
                         break;
                 case 'V':
-                        fprintf(stderr, ME "version: %s\n", version_str);
+                        pr2serr(ME "version: %s\n", version_str);
                         exit(0);
                 case 'w':
                         op->flags.wrprotect = sg_get_num(optarg);
                         if (op->flags.wrprotect >> 3) {
-                                fprintf(stderr, "bad argument to "
-                                        "'--wrprotect' not in range 0-7\n");
+                                pr2serr("bad argument to '--wrprotect' not "
+                                        "in range 0-7\n");
                                 goto out_err_no_usage;
                         }
                         break;
                 case 'x':
                         op->xfer_len = sg_get_num(optarg);
                         if (op->xfer_len < 0) {
-                                fprintf(stderr, "bad argument to "
-                                        "'--xferlen'\n");
+                                pr2serr("bad argument to '--xferlen'\n");
                                 goto out_err_no_usage;
                         }
                         break;
                 default:
-                        fprintf(stderr, "unrecognised option code 0x%x ??\n",
-                                c);
+                        pr2serr("unrecognised option code 0x%x ??\n", c);
                         goto out_err;
                 }
         }
@@ -275,21 +273,21 @@ parse_args(int argc, char* argv[], struct opts_t * op)
                 }
                 if (optind < argc) {
                         for (; optind < argc; ++optind)
-                                fprintf(stderr, "Unexpected extra argument: "
-                                        "%s\n", argv[optind]);
+                                pr2serr("Unexpected extra argument: %s\n",
+                                        argv[optind]);
                         goto out_err;
                 }
         }
         if (NULL == op->device_name) {
-                fprintf(stderr, "missing device name!\n");
+                pr2serr("missing device name!\n");
                 goto out_err;
         }
         if (!if_given) {
-                fprintf(stderr, "missing input file\n");
+                pr2serr("missing input file\n");
                 goto out_err;
         }
         if (!lba_given) {
-                fprintf(stderr, "missing lba\n");
+                pr2serr("missing lba\n");
                 goto out_err;
         }
         if (0 == op->xfer_len)
@@ -322,14 +320,7 @@ sg_build_scsi_cdb(unsigned char * cdbp, unsigned int blocks,
                 cdbp[1] |= FLAG_FUA;
         if (flags.fua_nv)
                 cdbp[1] |= FLAG_FUA_NV;
-        cdbp[2] = (unsigned char)((start_block >> 56) & 0xff);
-        cdbp[3] = (unsigned char)((start_block >> 48) & 0xff);
-        cdbp[4] = (unsigned char)((start_block >> 40) & 0xff);
-        cdbp[5] = (unsigned char)((start_block >> 32) & 0xff);
-        cdbp[6] = (unsigned char)((start_block >> 24) & 0xff);
-        cdbp[7] = (unsigned char)((start_block >> 16) & 0xff);
-        cdbp[8] = (unsigned char)((start_block >> 8) & 0xff);
-        cdbp[9] = (unsigned char)(start_block & 0xff);
+        sg_put_unaligned_be64((uint64_t)start_block, cdbp + 2);
         /* cdbp[10-12] are reserved */
         cdbp[13] = (unsigned char)(blocks & 0xff);
         cdbp[14] = (unsigned char)(flags.group & 0x1f);
@@ -350,14 +341,13 @@ sg_compare_and_write(int sg_fd, unsigned char * buff, int blocks,
         uint64_t ull = 0;
 
         if (sg_build_scsi_cdb(cawCmd, blocks, lba, flags)) {
-                fprintf(stderr, ME "bad cdb build, lba=0x%" PRIx64 ", "
-                        "blocks=%d\n", lba, blocks);
+                pr2serr(ME "bad cdb build, lba=0x%" PRIx64 ", blocks=%d\n",
+                        lba, blocks);
                 return -1;
         }
         ptvp = construct_scsi_pt_obj();
         if (NULL == ptvp) {
-                fprintf(sg_warnings_strm, "Could not construct scsit_pt_obj, "
-                        "out of " "memory\n");
+                pr2serr("Could not construct scsit_pt_obj, out of memory\n");
                 return -1;
         }
 
@@ -365,13 +355,13 @@ sg_compare_and_write(int sg_fd, unsigned char * buff, int blocks,
         set_scsi_pt_sense(ptvp, sense_b, sizeof(sense_b));
         set_scsi_pt_data_out(ptvp, buff, xfer_len);
         if (verbose > 1) {
-                fprintf(stderr, "    Compare and write cdb: ");
+                pr2serr("    Compare and write cdb: ");
                 for (k = 0; k < COMPARE_AND_WRITE_CDB_SIZE; ++k)
-                        fprintf(stderr, "%02x ", cawCmd[k]);
-                fprintf(stderr, "\n");
+                        pr2serr("%02x ", cawCmd[k]);
+                pr2serr("\n");
         }
         if ((verbose > 2) && (xfer_len > 0)) {
-                fprintf(stderr, "    Data-out buffer contents:\n");
+                pr2serr("    Data-out buffer contents:\n");
                 dStrHexErr((const char *)buff, xfer_len, 1);
         }
         res = do_scsi_pt(ptvp, sg_fd, DEF_TIMEOUT_SECS, verbose);
@@ -391,13 +381,11 @@ sg_compare_and_write(int sg_fd, unsigned char * buff, int blocks,
                         valid = sg_get_sense_info_fld(sense_b, slen,
                                                       &ull);
                         if (valid)
-                                fprintf(stderr, "Medium or hardware "
-                                        "error starting at lba=%"
-                                        PRIu64 " [0x%" PRIx64 "]\n",
-                                        ull, ull);
+                                pr2serr("Medium or hardware error starting "
+                                        "at lba=%" PRIu64 " [0x%" PRIx64
+                                        "]\n", ull, ull);
                         else
-                                fprintf(stderr, "Medium or hardware "
-                                        "error\n");
+                                pr2serr("Medium or hardware error\n");
                         ret = sense_cat;
                         break;
                 case SG_LIB_CAT_MISCOMPARE:
@@ -407,11 +395,10 @@ sg_compare_and_write(int sg_fd, unsigned char * buff, int blocks,
                         slen = get_scsi_pt_sense_len(ptvp);
                         valid = sg_get_sense_info_fld(sense_b, slen, &ull);
                         if (valid)
-                                fprintf(stderr, "Miscompare at byte offset: %"
-                                        PRIu64 " [0x%" PRIx64 "]\n", ull,
-                                        ull);
+                                pr2serr("Miscompare at byte offset: %" PRIu64
+                                        " [0x%" PRIx64 "]\n", ull, ull);
                         else
-                                fprintf(stderr, "Miscompare reported\n");
+                                pr2serr("Miscompare reported\n");
                         break;
                 default:
                         ret = sense_cat;
@@ -434,7 +421,7 @@ open_if(const char * fn, int got_stdin)
         else {
                 fd = open(fn, O_RDONLY);
                 if (fd < 0) {
-                        fprintf(stderr, ME "open error: %s: %s\n", fn,
+                        pr2serr(ME "open error: %s: %s\n", fn,
                                 safe_strerror(errno));
                         return -SG_LIB_FILE_ERROR;
                 }
@@ -451,7 +438,7 @@ open_dev(const char * outf, int verbose)
 {
         int sg_fd = sg_cmds_open_device(outf, 0 /* rw */, verbose);
         if (sg_fd < 0) {
-                fprintf(stderr, ME "open error: %s: %s\n", outf,
+                pr2serr(ME "open error: %s: %s\n", outf,
                         safe_strerror(-sg_fd));
                 return -SG_LIB_FILE_ERROR;
         }
@@ -475,19 +462,18 @@ main(int argc, char * argv[])
         memset(op, 0, sizeof(opts));
         res = parse_args(argc, argv, op);
         if (res != 0) {
-                fprintf(stderr, "Failed parsing args\n");
+                pr2serr("Failed parsing args\n");
                 goto out;
         }
 
         if (op->verbose) {
-                fprintf(stderr, "Running COMPARE AND WRITE command with the "
+                pr2serr("Running COMPARE AND WRITE command with the "
                         "following options:\n  in=%s ", op->ifn);
                 if (op->wfn_given)
-                        fprintf(stderr, "inw=%s ", op->wfn);
-                fprintf(stderr, "device=%s\n  lba=0x%" PRIx64
-                        " num_blocks=%d xfer_len=%d timeout=%d\n",
-                        op->device_name, op->lba, op->numblocks,
-                        op->xfer_len, op->timeout);
+                        pr2serr("inw=%s ", op->wfn);
+                pr2serr("device=%s\n  lba=0x%" PRIx64 " num_blocks=%d "
+                        "xfer_len=%d timeout=%d\n", op->device_name,
+                        op->lba, op->numblocks, op->xfer_len, op->timeout);
         }
         ifn_stdin = ((1 == strlen(op->ifn)) && ('-' == op->ifn[0]));
         infd = open_if(op->ifn, ifn_stdin);
@@ -497,8 +483,7 @@ main(int argc, char * argv[])
         }
         if (op->wfn_given) {
                 if ((1 == strlen(op->wfn)) && ('-' == op->wfn[0])) {
-                        fprintf(stderr, ME "don't allow stdin for write "
-                                "file\n");
+                        pr2serr(ME "don't allow stdin for write file\n");
                         res = SG_LIB_FILE_ERROR;
                         goto out;
                 }
@@ -517,7 +502,7 @@ main(int argc, char * argv[])
 
         wrkBuff = (unsigned char *)malloc(op->xfer_len);
         if (0 == wrkBuff) {
-                fprintf(stderr, "Not enough user memory\n");
+                pr2serr("Not enough user memory\n");
                 res = SG_LIB_CAT_OTHER;
                 goto out;
         }
@@ -526,30 +511,30 @@ main(int argc, char * argv[])
                 half_xlen = op->xfer_len / 2;
                 res = read(infd, wrkBuff, half_xlen);
                 if (res < 0) {
-                        fprintf(stderr, "Could not read from %s", op->ifn);
+                        pr2serr("Could not read from %s", op->ifn);
                         goto out;
                 } else if (res < half_xlen) {
-                        fprintf(stderr, "Read only %d bytes (expected %d) "
-                                "from %s\n", res, half_xlen, op->ifn);
+                        pr2serr("Read only %d bytes (expected %d) from %s\n",
+                                res, half_xlen, op->ifn);
                         goto out;
                 }
                 res = read(wfd, wrkBuff + half_xlen, half_xlen);
                 if (res < 0) {
-                        fprintf(stderr, "Could not read from %s", op->wfn);
+                        pr2serr("Could not read from %s", op->wfn);
                         goto out;
                 } else if (res < half_xlen) {
-                        fprintf(stderr, "Read only %d bytes (expected %d) "
-                                "from %s\n", res, half_xlen, op->wfn);
+                        pr2serr("Read only %d bytes (expected %d) from %s\n",
+                                res, half_xlen, op->wfn);
                         goto out;
                 }
         } else {
                 res = read(infd, wrkBuff, op->xfer_len);
                 if (res < 0) {
-                        fprintf(stderr, "Could not read from %s", op->ifn);
+                        pr2serr("Could not read from %s", op->ifn);
                         goto out;
                 } else if (res < op->xfer_len) {
-                        fprintf(stderr, "Read only %d bytes (expected %d) "
-                                "from %s\n", res, op->xfer_len, op->ifn);
+                        pr2serr("Read only %d bytes (expected %d) from %s\n",
+                                res, op->xfer_len, op->ifn);
                         goto out;
                 }
         }
@@ -568,7 +553,7 @@ out:
                 default:
                         sg_get_category_sense_str(res, sizeof(b), b,
                                                   op->verbose);
-                        fprintf(stderr, ME "SCSI COMPARE AND WRITE: %s\n", b);
+                        pr2serr(ME "SCSI COMPARE AND WRITE: %s\n", b);
                         break;
                 }
         }

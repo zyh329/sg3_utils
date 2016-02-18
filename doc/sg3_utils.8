@@ -1,10 +1,12 @@
-.TH SG3_UTILS "8" "June 2014" "sg3_utils\-1.39" SG3_UTILS
+.TH SG3_UTILS "8" "February 2016" "sg3_utils\-1.42" SG3_UTILS
 .SH NAME
 sg3_utils \- a package of utilities for sending SCSI commands
 .SH SYNOPSIS
 .B sg_*
-[\fI\-\-help\fR] [\fI\-\-hex\fR] [\fI\-\-maxlen=LEN\fR] [\fI\-\-raw\fR]
-[\fI\-\-verbose\fR] [\fI\-\-version\fR] [\fIOTHER_OPTIONS\fR] \fIDEVICE\fR
+[\fI\-\-enumerate\fR] [\fI\-\-help\fR] [\fI\-\-hex\fR] [\fI\-\-in=FN\fR]
+[\fI\-\-maxlen=LEN\fR] [\fI\-\-raw\fR] [\fI\-\-verbose\fR] [\fI\-\-version\fR]
+[\fIOTHER_OPTIONS\fR]
+\fIDEVICE\fR
 .SH DESCRIPTION
 .\" Add any additional description here
 .PP
@@ -19,6 +21,10 @@ command. A mapping between SCSI commands and the sg3_utils utilities that
 issue them is shown in the COVERAGE file. The sg_raw utility can be used to
 send an arbitrary SCSI command (supplied on the command line) to the
 given \fIDEVICE\fR.
+.PP
+sg_decode_sense can be used to decode SCSI sense data given on the command
+line or in a file. sg_raw \-vvv will output the T10 name of a given SCSI
+CDB which is most often 16 bytes or less in length.
 .PP
 SCSI draft standards can be found at http://www.t10.org . The standards
 themselves can be purchased from ANSI and other standards organizations.
@@ -73,11 +79,11 @@ is tightly bound to Linux and hence is not ported to other OSes. A more
 generic utility (than sg_dd) called ddpt in a package of the same name has
 been ported to other OSes.
 .SH LINUX DEVICE NAMING
-Normal disk block devices have names like /dev/sda, /dev/sdb,
-/dev/sdc, etc. SCSI disks in Linux have always had names like that but
-in recent Linux kernels (e.g. lk 2.6 series) it is becoming more common
-for almost all disks to be named like that. Partitions within a disk
-are specified by a number appended to the device name, starting at
+Most disk block devices have names like /dev/sda, /dev/sdb, /dev/sdc, etc.
+SCSI disks in Linux have always had names like that but in recent Linux
+kernels it has become more common for many other disks (including SATA
+disks and USB storage devices) to be named like that. Partitions within a
+disk are specified by a number appended to the device name, starting at
 1 (e.g. /dev/sda1 ).
 .PP
 Tape drives are named /dev/st<num> or /dev/nst<num> where <num> starts
@@ -100,6 +106,9 @@ and alternate device names.
 Prior to the Linux kernel 2.6 series these utilities could only use
 generic device names (e.g. /dev/sg1 ). In almost all cases in the Linux
 kernel 2.6 series, any device name can be used by these utilities.
+.PP
+Very little has changed in Linux device naming in the Linux kernel 3
+and 4 series.
 .SH WINDOWS DEVICE NAMING
 Storage and related devices can have several device names in Windows.
 Probably the most common in the volume name (e.g. "D:"). There are also
@@ -197,9 +206,10 @@ syntax error. Either illegal command line options, options with bad
 arguments or a combination of options that is not permitted.
 .TP
 .B 2
-the \fIDEVICE\fR reports that it is not ready for the operation
-requested. The device may be in the process of becoming ready (e.g.
-spinning up but not at speed) so the utility may work after a wait.
+the \fIDEVICE\fR reports that it is not ready for the operation requested.
+The \fIDEVICE\fR may be in the process of becoming ready (e.g.  spinning up
+but not at speed) so the utility may work after a wait. In Linux the
+\fIDEVICE\fR may be temporarily blocked while error recovery is taking place.
 .TP
 .B 3
 the \fIDEVICE\fR reports a medium or hardware error (or a blank check). For
@@ -266,6 +276,28 @@ because another machine (HBA or SCSI "initiator") holds a reservation on
 this \fIDEVICE\fR. On modern SCSI systems this is related to the use of
 the PERSISTENT RESERVATION family of commands.
 .TP
+.B 25
+the \fIDEVICE\fR reports a SCSI status of "condition met". Currently only
+the PRE\-FETCH command (see SBC\-4) yields this status.
+.TP
+.B 26
+the \fIDEVICE\fR reports a SCSI status of "busy". SAM\-5 defines this
+status as the logical unit is temporarily unable to process a command.
+It is recommended to re-issue the command.
+.TP
+.B 27
+the \fIDEVICE\fR reports a SCSI status of "task set full".
+.TP
+.B 28
+the \fIDEVICE\fR reports a SCSI status of "ACA active". ACA is "auto
+contingent allegiance" and is seldom used.
+.TP
+.B 29
+the \fIDEVICE\fR reports a SCSI status of "task aborted". SAM\-5 says:
+"This status shall be returned if a command is aborted by a command or task
+management function on another I_T nexus and the Control mode page TAS bit
+is set to one".
+.TP
 .B 33
 the command sent to \fIDEVICE\fR has timed out.
 .TP
@@ -324,6 +356,13 @@ Some options are used uniformly in most of the utilities in this
 package. Those options are listed below. Note that there are some
 exceptions.
 .TP
+\fB\-e\fR, \fB\-\-enumerate\fR
+some utilities (e.g. sg_ses and sg_vpd) store a lot of information in
+internal tables. This option will output that information in some readable
+form (e.g. sorted by an acronym or by page number) then exit. Note that
+with this option \fIDEVICE\fR is ignored (as are most other options) and no
+SCSI IO takes place, so the invoker does not need any elevated permissions.
+.TP
 \fB\-h\fR, \fB\-?\fR, \fB\-\-help\fR
 output the usage message then exit. In a few older utilities the '\-h'
 option requests hexadecimal output. In these cases the '\-?' option will
@@ -331,7 +370,35 @@ output the usage message then exit.
 .TP
 \fB\-H\fR, \fB\-\-hex\fR
 for SCSI commands that yield a non\-trivial response, print out that
-response in ASCII hexadecimal.
+response in ASCII hexadecimal. To produce hexadecimal that can be parsed
+by other utilities (e.g. without a relative address to the left and without
+trailing ASCII) use this option three or four times.
+.TP
+\fB\-i\fR, \fB\-\-in\fR=\fIFN\fR
+many SCSI commands fetch a significant amount of data (returned in the
+data\-in buffer) which several of these utilities decode (e.g. sg_vpd and
+sg_logs). To separate the two steps of fetching the data from a SCSI device
+and then decoding it, this option has been added. The first step (fetching
+the data) can be done using the \fI\-\-hex\fR or \fI\-\-raw\fR option and
+redirecting the command line output to a file (often done with ">" in Unix
+based operating systems). The difference between \fI\-\-hex\fR and
+\fI\-\-raw\fR is that the former produces output in ASCII hexadecimal
+while \fI\-\-raw\fR produces its output in "raw" binary.
+.br
+The second step (i.e. decoding the SCSI response data now held in a file)
+can be done using this \fI\-\-in=FN\fR option where the file name is
+\fIFN\fR. If "\-" is used for \fIFN\fR then stdin is assumed, again this
+allows for command line redirection (or piping). That file (or stdin)
+is assumed to contain ASCII hexadecimal unless the \fI\-\-raw\fR option is
+also given in which case it is assumed to be binary. Notice that the meaning
+of the \fI\-\-raw\fR option is "flipped" when used with \fI\-\-in=FN\fR to
+act on the input, typically it acts on the output data.
+.br
+Since the structure of the data returned by SCSI commands varies
+considerably then the usage information or manpage of the utility being
+used should be checked. In some cases \fI\-\-hex\fR may need to be used
+multiple times (and is more conveniently given as '\-HH' or '\-HHH). In
+other cases the name of this option is \fI\-\-inhex=FN\fR.
 .TP
 \fB\-m\fR, \fB\-\-maxlen\fR=\fILEN\fR
 several important SCSI commands (e.g. INQUIRY and MODE SENSE) have response
@@ -349,9 +416,14 @@ disables any "double fetch" strategy that may have otherwise been used.
 \fB\-r\fR, \fB\-\-raw\fR
 for SCSI commands that yield a non\-trivial response, output that response
 in binary to stdout. If any error messages or warning are produced they are
-usually sent to stderr. Some utilities that consume data to send to the
-device along with the SCSI command, use this option to provide that data
-or indicate that it can be read from stdin.
+usually sent to stderr so as to not interfere with the output from this
+option.
+.br
+Some utilities that consume data to send to the \fIDEVICE\fR along with the
+SCSI command, use this option. Alernatively the \fI\-\-in=FN\fR option causes
+\fIDEVICE\fR to be ignored and the response data (to be decoded) fetched
+from a file named \fIFN\fR. In these cases this option may indicate that
+binary data can be read from stdin or from a nominated file (e.g. \fIFN\fR).
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
 increase the level of verbosity, (i.e. debug output). Can be used multiple
@@ -413,6 +485,12 @@ in the C programming language. The second hexadecimal representation is a
 trailing "h" or "H" as found in (storage) standards. When hex numbers are
 given, multipliers cannot be used. For example the decimal value "256" can
 be given as "0x100" or "100h".
+.SH MICROCODE AND FIRMWARE
+There are two standardized methods for downloading microcode (i.e. device
+firmware) to a SCSI device. The more general way is with the SCSI WRITE
+BUFFER command, see the sg_write_buffer utility. SCSI enclosures have
+their own method based on the Download microcode control/status diagnostic
+page, see the sg_ses_microcode utility.
 .SH SCRIPTS, EXAMPLES and UTILS
 There are several bash shell scripts in the 'scripts' subdirectory that
 invoke compiled utilities (e.g. sg_readcap). Several of the scripts start
@@ -443,7 +521,7 @@ CREDITS file and individual source files (in the 'src' directory).
 .SH "REPORTING BUGS"
 Report bugs to <dgilbert at interlog dot com>.
 .SH COPYRIGHT
-Copyright \(co 1999\-2014 Douglas Gilbert
+Copyright \(co 1999\-2016 Douglas Gilbert
 .br
 Some utilities are distributed under a GPL version 2 license while
 others, usually more recent ones, are under a FreeBSD license. The files
